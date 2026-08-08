@@ -1758,6 +1758,9 @@
                     siweUri: siweUri,
                     domain: domain
                 });
+                if (!channel?.url || !channel?.channelToken) {
+                    throw new Error('The Farcaster relay did not return a sign-in channel.');
+                }
 
                 qrImg.src = "https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=" + encodeURIComponent(channel.url);
                 openLink.href = channel.url;
@@ -1787,7 +1790,11 @@
                 }
             } catch (err) {
                 console.error("Farcaster auth error:", err);
-                statusEl.textContent = "Sign-in failed. Please try again.";
+                // Relay failures happen before a QR code exists. Show a safe, concise reason
+                // so users can distinguish a temporary relay/network issue from a cancelled
+                // approval instead of receiving an unhelpful generic message.
+                const detail = err instanceof Error && err.message ? err.message : 'The Farcaster relay could not start a sign-in request.';
+                statusEl.textContent = `Sign-in failed: ${detail.slice(0, 180)}`;
             }
         }
 
