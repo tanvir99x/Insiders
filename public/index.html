@@ -1332,6 +1332,14 @@
             const nonce = await getLoginNonce(address);
             const message = makeLoginMessage(address, nonce);
             setLoginStatus('Confirm the secure login message in your wallet…');
+            // The mobile Coinbase/Base browser can complete the initial account picker but
+            // lose the provider's authorisation state while the nonce request is in flight.
+            // Re-requesting accounts immediately before personal_sign is idempotent on
+            // desktop and completes that handshake on mobile.
+            const signingAccounts = await coinbaseProvider.request({ method: 'eth_requestAccounts' });
+            if (!signingAccounts?.[0] || signingAccounts[0].toLowerCase() !== address.toLowerCase()) {
+                throw new Error('The active wallet account changed. Please try again.');
+            }
             const signature = await coinbaseProvider.request({ method: 'personal_sign', params: [message, address] });
             const verification = await verifyLoginWithServer({ address, message, signature, nonce, chainId: BASE_CHAIN_ID });
             const session = {
