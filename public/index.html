@@ -1252,6 +1252,29 @@
             return getSavedFarcasterProfiles()[address.toLowerCase()] || null;
         }
 
+        async function loadSavedFarcasterProfileFromServer() {
+            try {
+                const response = await fetch('/api/farcaster/connection', { credentials: 'include', cache: 'no-store' });
+                if (!response.ok) return null;
+                const payload = await response.json();
+                return payload?.profile?.fid ? payload.profile : null;
+            } catch (_) { return null; }
+        }
+
+        async function saveFarcasterProfileToServer(profile) {
+            if (!profile?.fid) return;
+            try {
+                await fetch('/api/farcaster/connection', {
+                    method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fid: profile.fid, username: profile.username, displayName: profile.displayName || profile.display_name, pfpUrl: profile.pfpUrl || profile.pfp_url })
+                });
+            } catch (_) { /* Local storage remains available if the server is temporarily unavailable. */ }
+        }
+
+        function removeFarcasterProfileFromServer() {
+            fetch('/api/farcaster/connection', { method: 'DELETE', credentials: 'include' }).catch(() => {});
+        }
+
         function setFarcasterConnectControl(isConnected) {
             const container = document.getElementById('farcaster-box-container');
             if (isConnected) {
@@ -1768,12 +1791,13 @@
             }
         }
 
-        function handleFarcasterAuthSuccess(fcData) {
+        async function handleFarcasterAuthSuccess(fcData) {
             // fcData.fid / username / displayName / pfpUrl come straight from the verified
             // Sign-In-With-Farcaster signature — not user-entered input.
             farcasterProfile = { ...fcData, follower_count: 0, following_count: 0 };
             applyFarcasterProfile(farcasterProfile);
             saveFarcasterProfile(farcasterProfile);
+            await saveFarcasterProfileToServer(farcasterProfile);
             closeFarcasterAuthModal();
             syncFarcasterSocialProfile(fcData);
         }
@@ -1962,7 +1986,9 @@
             renderAppSocialSummary();
             renderNotifications();
             renderReports();
-            const savedFarcasterProfile = getSavedFarcasterProfile(address);
+            // A Farcaster connection belongs to the wallet, not a single browser. Prefer the
+            // server copy so the same wallet restores its verified profile on mobile and PC.
+            const savedFarcasterProfile = await loadSavedFarcasterProfileFromServer() || getSavedFarcasterProfile(address);
             if (savedFarcasterProfile) {
                 farcasterProfile = savedFarcasterProfile;
                 applyFarcasterProfile(farcasterProfile);
@@ -2117,6 +2143,7 @@
                 const profiles = getSavedFarcasterProfiles();
                 delete profiles[userAddress.toLowerCase()];
                 localStorage.setItem(FARCASTER_PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+                removeFarcasterProfileFromServer();
             }
             setFarcasterConnectControl(false);
             resetFarcasterSocialSummary();
