@@ -1493,7 +1493,10 @@
                 const accounts = await coinbaseProvider.request({ method: 'eth_requestAccounts' });
 
                 if (accounts && accounts.length > 0) {
-                    await ensureBaseNetwork();
+                    // Signing an authentication message is network-independent. Some Coinbase
+                    // Smart Wallet providers reject another RPC while their account-access
+                    // handshake is still settling, so do not query/switch the chain before
+                    // personal_sign. Transaction paths enforce Base separately.
                     await signInWallet(accounts[0]);
                     handleSuccessfulConnection(accounts[0]);
                     setLoginStatus('Signed in successfully.');
