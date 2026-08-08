@@ -1,0 +1,2974 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Base Insiders — Base Community Hub</title>
+
+    <!-- Avoid showing the connect screen for a returning user while the wallet
+         SDK restores the already-signed-in local session. -->
+    <script>
+        try {
+            const saved = JSON.parse(localStorage.getItem('base-insiders-login-session-v1') || 'null');
+            const usable = saved && saved.address && (saved.mode === 'local' || (saved.expiresAt && Date.now() < saved.expiresAt));
+            if (usable) document.documentElement.classList.add('restoring-session');
+        } catch (_) { /* Storage may be unavailable in private browsing. */ }
+    </script>
+    <style>
+        html.restoring-session #connect-overlay { display: none !important; }
+        html.restoring-session #main-app { display: flex !important; }
+    </style>
+    
+    <!-- External CSS -->
+    <link rel="stylesheet" href="style.css">
+    <script src="config.js"></script>
+    <!-- API-free Base FAQ answers used when the AI provider is unavailable. -->
+    <script src="base-help.js"></script>
+    <!-- Edit tasks/tasks.js to add, remove, or change quests without touching app code. -->
+    <script src="tasks/tasks.js"></script>
+    <!-- Edit insiders-news.js to update the Hot News carousel and Insiders feed. -->
+    <script src="insiders-news.js"></script>
+    <!-- Small additive styles for the new Farcaster QR sign-in UI (style.css didn't have these) -->
+    <style>
+        .fc-qr-wrap { display: flex; justify-content: center; margin: 16px 0; }
+        .fc-qr-img { width: 200px; height: 200px; border-radius: 12px; background: #fff; padding: 8px; }
+        .fc-open-link { display: block; text-align: center; text-decoration: none; margin-bottom: 12px; }
+        .fc-auth-status-text { text-align: center; font-size: 13px; opacity: 0.75; margin-bottom: 8px; }
+
+        /* Task list: Claim pill replaces the old "▼ Tap" text */
+        .claim-btn-pill {
+            padding: 6px 16px;
+            border-radius: 20px;
+            border: none;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            background: #0052ff;
+            color: #fff;
+            white-space: nowrap;
+            transition: opacity 0.2s ease, filter 0.2s ease;
+        }
+        /* Blurred + disabled until the task has been opened/"completed" */
+        .claim-btn-pill.locked {
+            filter: blur(1.5px);
+            opacity: 0.45;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+        .claim-btn-pill.claimed {
+            background: #16a34a;
+            filter: none;
+            opacity: 1;
+            cursor: default;
+            pointer-events: none;
+        }
+        /* Finished tasks sink visually once claimed and moved to the bottom of the list */
+        .task-item.finished {
+            opacity: 0.5;
+            cursor: default;
+        }
+        .task-item.finished .task-info h4 {
+            text-decoration: line-through;
+        }
+        .task-item.task-completing { animation: taskLeaveForCompleted .34s ease-in forwards; pointer-events: none; }
+        .task-item.task-arrived { animation: taskArriveCompleted .46s cubic-bezier(.2, 1.35, .4, 1) both; }
+        @keyframes taskLeaveForCompleted { to { opacity: 0; transform: translateX(22px) scale(.96); } }
+        @keyframes taskArriveCompleted { from { opacity: 0; transform: translateY(18px) scale(.96); } to { opacity: .5; transform: translateY(0) scale(1); } }
+
+        /* Follow button stays beside the creator identity instead of floating at the card edge. */
+        .follow-btn { margin-left: 2px; padding: 6px 12px; border: 1px solid #3478ff; border-radius: 9px; background: rgba(0,82,255,.1); color: #82aeff; font-size: 11px; font-weight: 800; letter-spacing: .01em; line-height: 1; cursor: pointer; transition: border-color .18s ease, background .18s ease, color .18s ease, transform .18s ease; }
+        .follow-btn:hover { border-color: #79a7ff; background: #075bff; color: #fff; transform: translateY(-1px); }
+        .follow-btn.following { border-color: rgba(93,218,171,.42); background: rgba(27,157,108,.12); color: #7ee6ba; }
+        .follow-btn.following:hover { border-color: rgba(255,132,149,.6); background: rgba(189,57,78,.16); color: #ff9ba9; }
+        .post-user-meta { display: flex; align-items: center; min-width: 0; }
+        .following-empty-state { text-align: center; opacity: 0.6; font-size: 13px; padding: 30px 10px; }
+        .following-empty-state.hidden { display: none; }
+
+        /* ---------- Inline comment thread (per-post, animated) ---------- */
+        .post-comments-section {
+            display: grid;
+            grid-template-rows: 0fr;
+            opacity: 0;
+            transition: grid-template-rows 0.32s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.24s ease, margin-top 0.32s ease;
+            margin-top: 0;
+        }
+        .post-comments-section.open {
+            grid-template-rows: 1fr;
+            opacity: 1;
+            margin-top: 14px;
+        }
+        .post-comments-section > .post-comments-inner {
+            overflow: hidden;
+            min-height: 0;
+        }
+        .post-comments-section .post-comments-inner-pad {
+            border-top: 1px solid rgba(255,255,255,0.08);
+            padding-top: 12px;
+        }
+
+        .comment-list-inline { display: flex; flex-direction: column; gap: 12px; margin-bottom: 10px; }
+        .comment-empty-state { text-align: center; opacity: 0.55; font-size: 13px; padding: 14px 0; }
+
+        .comment-item, .comment-reply-item {
+            display: flex; gap: 10px; align-items: flex-start;
+            animation: commentFadeIn 0.28s ease both;
+        }
+        .comment-reply-item { margin-top: 10px; margin-left: 30px; }
+        @keyframes commentFadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .comment-avatar {
+            width: 32px; height: 32px; border-radius: 50%;
+            background-size: cover; background-position: center; background-color: rgba(255,255,255,0.08);
+            flex-shrink: 0; box-shadow: 0 0 0 2px rgba(255,255,255,0.08);
+        }
+        .comment-avatar.mini { width: 28px; height: 28px; }
+
+        .comment-body { flex: 1; min-width: 0; }
+        .comment-bubble {
+            background: rgba(255,255,255,0.045);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 14px;
+            padding: 8px 12px;
+            transition: background 0.15s ease;
+        }
+        .comment-bubble:hover { background: rgba(255,255,255,0.07); }
+        .comment-bubble strong { font-size: 13px; }
+        .comment-bubble .comment-time { font-size: 11px; opacity: 0.5; margin-left: 6px; font-weight: 400; }
+        .comment-bubble p { font-size: 14px; margin: 3px 0 0 0; word-break: break-word; line-height: 1.4; }
+
+        .comment-actions { display: flex; gap: 16px; margin-top: 5px; padding-left: 4px; }
+        .comment-like-btn, .comment-reply-btn {
+            background: none; border: none; color: inherit; opacity: 0.6;
+            font-size: 12px; font-weight: 600; cursor: pointer; padding: 0;
+            display: inline-flex; align-items: center; gap: 4px;
+            transition: opacity 0.15s ease, color 0.15s ease;
+        }
+        .comment-actions button:hover { opacity: 1; }
+        .comment-like-btn.liked { color: #ef4444; opacity: 1; }
+        .comment-like-btn .heart-icon { display: inline-block; transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        .comment-like-btn.liked .heart-icon { transform: scale(1.25); }
+        .comment-like-btn.pop .heart-icon { animation: heartPop 0.4s ease; }
+        @keyframes heartPop {
+            0%   { transform: scale(1); }
+            35%  { transform: scale(1.5); }
+            60%  { transform: scale(0.9); }
+            100% { transform: scale(1.15); }
+        }
+
+        .reply-input-row {
+            display: flex; gap: 6px; margin-top: 8px; margin-left: 4px;
+            overflow: hidden; max-height: 0; opacity: 0;
+            transition: max-height 0.22s ease, opacity 0.18s ease, margin-top 0.22s ease;
+        }
+        .reply-input-row.open { max-height: 50px; opacity: 1; }
+        .reply-input-row input {
+            flex: 1; font-size: 13px; padding: 7px 12px; border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04); color: inherit;
+            transition: border-color 0.15s ease;
+        }
+        .reply-input-row input:focus { outline: none; border-color: #0052ff; }
+
+        .comment-input-row-inline {
+            display: flex; align-items: center; gap: 8px;
+            padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.07);
+        }
+        .comment-input-row-inline input {
+            flex: 1; padding: 10px 14px; border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04); color: inherit;
+            font-size: 14px; transition: border-color 0.15s ease, background 0.15s ease;
+        }
+        .comment-input-row-inline input:focus { outline: none; border-color: #0052ff; background: rgba(255,255,255,0.06); }
+        .comment-send-btn {
+            width: 34px; height: 34px; border-radius: 50%; border: none;
+            background: #0052ff; color: #fff; font-size: 15px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+            transition: transform 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+        }
+        .comment-send-btn:hover { background: #0043d1; transform: scale(1.06); }
+        .comment-send-btn:active { transform: scale(0.92); }
+        .comment-send-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+        /* Reply controls that live inside an activity notification. */
+        .notification-item.interactive { cursor: pointer; transition: background .18s ease, border-color .18s ease, transform .18s ease; }
+        .notification-item.interactive:hover { background: rgba(0,82,255,.09); border-color: rgba(77,139,255,.42); transform: translateY(-1px); }
+        .notification-comment-preview { margin-top: 7px !important; padding: 8px 10px; border-left: 2px solid #4d8bff; border-radius: 0 8px 8px 0; background: rgba(72,122,230,.08); color: #c8d7ee !important; font-size: 12px !important; font-style: italic; }
+        .notification-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+        .notification-open-post { color: #70a6ff; font-size: 11px; font-weight: 700; }
+        .notification-inline-reply { display: flex; gap: 7px; margin-top: 10px; }
+        .notification-inline-reply input { min-width: 0; flex: 1; border: 1px solid #314767; border-radius: 9px; background: rgba(5,12,21,.42); color: #fff; padding: 8px 10px; font-size: 12px; outline: none; }
+        .notification-inline-reply input:focus { border-color: #5b91ff; }
+        .notification-inline-reply button { border: 0; border-radius: 9px; background: #075bff; color: #fff; padding: 0 11px; font-size: 11px; font-weight: 750; cursor: pointer; }
+        .notification-tx-status { color: #73d8b2; font-size: 11px; font-weight: 800; }
+        .notification-call-id { max-width: 138px; overflow: hidden; color: #8fa5c6; font-size: 10px; }
+
+        /* Comment-count button pulse when a new comment lands */
+        .action-btn.comment-btn.bump .comment-count { animation: countBump 0.3s ease; }
+        @keyframes countBump {
+            0%   { transform: scale(1); }
+            50%  { transform: scale(1.35); color: #4d8bff; }
+            100% { transform: scale(1); }
+        }
+        .action-btn.comment-btn.active-thread { color: #4d8bff; }
+
+        /* Heart pop animation shared by post-like and comment-like buttons */
+        .action-btn .heart-icon, .comment-like-btn .heart-icon {
+            display: inline-block; transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        .action-btn.liked, .comment-like-btn.liked { color: #ef4444; }
+        .action-btn.liked .heart-icon, .comment-like-btn.liked .heart-icon { transform: scale(1.2); }
+        .action-btn.pop .heart-icon, .comment-like-btn.pop .heart-icon { animation: heartPop 0.4s ease; }
+    </style>
+
+
+    <!-- Ethers.js -->
+    <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+    <!--
+      Coinbase Wallet SDK v4 + Farcaster Auth Client are ESM-only packages (no UMD/browser
+      global build exists for either). Loading them as plain <script src="..."> tags never
+      defines a window global, which is why "Base Smart Wallet SDK failed to load" happened —
+      window.CoinbaseWalletSDK was always undefined. They must be loaded as real ES modules.
+    -->
+    <script type="module">
+        import { CoinbaseWalletSDK } from "https://esm.sh/@coinbase/wallet-sdk@4.3.7";
+        import { createAppClient, viemConnector } from "https://esm.sh/@farcaster/auth-client@0.3.0";
+
+        window.CoinbaseWalletSDK = CoinbaseWalletSDK;
+        window.__fcAppClient = createAppClient({
+            relay: "https://relay.farcaster.xyz",
+            ethereum: viemConnector()
+        });
+
+        window.dispatchEvent(new Event('cbw-sdk-ready'));
+        window.dispatchEvent(new Event('fc-client-ready'));
+    </script>
+</head>
+<body>
+
+    <div class="app-container">
+        <!-- CONNECTION OVERLAY -->
+        <div id="connect-overlay" class="connect-overlay">
+            <header class="login-topbar">
+                <div class="login-brand"><span class="base-mark">B</span><span>base <b>insiders</b></span></div>
+                <div class="login-topbar-right"><span class="setup-status"><i></i> Setup required</span><span class="login-avatar">BI</span></div>
+            </header>
+            <section class="login-hero">
+                <div class="login-copy">
+                    <p class="login-eyebrow">BASE COMMUNITY HUB</p>
+                    <h1>Meet the builders<br>moving <span>onchain.</span></h1>
+                    <p class="login-description">Share what you are building, discover the ecosystem, and earn verified community recognition.</p>
+                </div>
+                <div class="connect-card">
+                    <div class="connect-logo-box"><span class="base-mark">B</span></div>
+                    <p class="wallet-eyebrow">YOUR ONCHAIN IDENTITY</p>
+                    <h2>Connect your wallet</h2>
+                    <p>Use Base Smart Wallet with passkey authentication. No password, seed phrase, or email is needed.</p>
+                    <button class="connect-btn-base" onclick="connectCoinbaseSmartWallet()">
+                        <div class="base-blue-dot">B</div>
+                        <div class="connect-btn-text"><strong>Base Smart Wallet</strong><span>Passkey · Base Mainnet</span></div>
+                        <span class="wallet-arrow">→</span>
+                    </button>
+                    <label class="login-consent" aria-label="Wallet login consent">
+                        <input id="login-consent" type="checkbox" checked>
+                        <span>I agree to the Terms and understand that I will sign a login message, not a transaction.</span>
+                    </label>
+                    <p id="login-status" class="login-status" aria-live="polite">Secured by your wallet signature</p>
+                </div>
+            </section>
+        </div>
+
+        <!-- FARCASTER CONNECT MODAL -->
+        <div id="fc-auth-modal" class="connect-overlay fc-modal-overlay">
+            <div class="connect-card fc-card-width">
+                <h3 class="fc-modal-title">Sign in with Farcaster</h3>
+                <p class="fc-modal-desc">Scan with your phone camera, or tap the button below to approve in Warpcast.</p>
+                <div id="fc-qr-wrap" class="fc-qr-wrap">
+                    <img id="fc-qr-img" src="" alt="Scan to sign in with Farcaster" class="fc-qr-img">
+                </div>
+                <a id="fc-open-warpcast-link" href="#" target="_blank" rel="noopener" class="fc-sync-btn fc-open-link">Open Warpcast to Approve</a>
+                <p id="fc-auth-status" class="fc-modal-desc fc-auth-status-text">Generating sign-in request…</p>
+                <div class="fc-modal-actions">
+                    <button onclick="closeFarcasterAuthModal()" class="fc-cancel-btn">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- FARCASTER SOCIAL GRAPH MODAL -->
+        <div id="fc-social-modal" class="connect-overlay fc-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="fc-social-title">
+            <div class="connect-card fc-social-card">
+                <div class="fc-social-modal-header">
+                    <div><p class="fc-social-eyebrow">FARCASTER SOCIAL GRAPH</p><h3 id="fc-social-title" class="fc-modal-title">Followers</h3></div>
+                    <button class="fc-social-close" onclick="closeFarcasterSocialModal()" aria-label="Close">×</button>
+                </div>
+                <div id="fc-social-list" class="fc-social-list" aria-live="polite"></div>
+                <button id="fc-social-more" class="fc-social-more hidden" onclick="loadMoreFarcasterSocialUsers()">Load more</button>
+            </div>
+        </div>
+
+                <!-- APP USER PROFILE MODAL -->
+        <div id="user-profile-modal" class="connect-overlay fc-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="user-profile-name">
+            <div class="connect-card user-profile-modal-card">
+                <button class="fc-social-close" onclick="closeUserProfileModal()" aria-label="Close">×</button>
+                <div id="user-profile-avatar" class="user-profile-modal-avatar"></div>
+                <h3 id="user-profile-name" class="fc-modal-title">Profile</h3>
+                <p id="user-profile-handle" class="fc-modal-desc"></p>
+                <button id="user-profile-follow" class="fc-connect-trigger-btn hidden">Follow</button>
+            </div>
+        </div>
+
+        <div id="legal-modal" class="connect-overlay fc-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="legal-modal-title">
+            <div class="connect-card legal-modal-card">
+                <button class="fc-social-close" onclick="closeLegalModal()" aria-label="Close">×</button>
+                <p class="fc-social-eyebrow">BASE INSIDERS</p>
+                <h3 id="legal-modal-title" class="fc-modal-title">Community & safety</h3>
+                <p class="fc-modal-desc">Use your wallet safely. Base Insiders will never ask for a seed phrase, private key, or password.</p>
+                <div class="legal-modal-links"><a href="/terms" target="_blank" rel="noopener">Terms of Use</a><a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a><button type="button" onclick="contactSupport()">Contact support</button></div>
+            </div>
+        </div>
+
+        <div id="badges-modal" class="connect-overlay fc-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="badges-modal-title">
+            <div class="connect-card badges-modal-card">
+                <button class="fc-social-close" onclick="closeBadgesModal()" aria-label="Close">×</button>
+                <p class="fc-social-eyebrow">ONCHAIN REPUTATION</p>
+                <h3 id="badges-modal-title" class="fc-modal-title">Your badges</h3>
+                <p class="fc-modal-desc">Complete quests to unlock the next rank.</p>
+                <div id="badges-grid" class="badges-grid"></div>
+            </div>
+        </div>
+
+        <!-- MAIN APP -->
+        <div id="main-app" class="main-app-content hidden">
+            <div id="app-toast" class="app-toast" role="status" aria-live="polite"></div>
+            <header class="app-header">
+                <div style="flex: 1;"></div>
+                <div class="brand-logo-center" onclick="switchTab('feed')">
+                    <img src="insiders-logo.png" alt="Insiders logo" class="app-logo-img">
+                    <span class="brand-title">insiders</span>
+                </div>
+                <div style="flex: 1;"></div>
+            </header>
+            
+            <nav class="feed-nav" id="feed-nav-bar">
+                <span class="active" id="feed-tab-foryou" onclick="switchTab('feed')">For You</span>
+                <span id="feed-tab-following" onclick="switchTab('following')">Following</span>
+            </nav>
+            
+            <main class="feed-content" id="main-content">
+                <!-- FEED VIEW -->
+                <div id="feed-view" class="view-section active">
+                    <div class="create-post">
+                        <div class="create-post-top">
+                            <div class="user-pic header-user-avatar" id="feed-user-avatar-icon">IN</div>
+                            <input type="text" id="post-text-input" placeholder="Broadcast to Base mainnet feed...">
+                        </div>
+                        <div id="file-name-display" class="file-preview-name"></div>
+                        <div class="create-post-actions">
+                            <label class="file-upload-label">
+                                <span>📎 Attach File</span>
+                                <input type="file" id="post-file-input" accept="image/*" onchange="previewFile()">
+                            </label>
+                            <button class="post-submit-btn" onclick="createNewPost()">Publish post</button>
+                        </div>
+                    </div>
+                    
+                    <div id="posts-feed-container"></div>
+                    <p id="following-empty-state" class="following-empty-state hidden" aria-live="polite"></p>
+                </div>
+
+                <!-- NOTIFICATIONS VIEW -->
+                <div id="notifications-view" class="view-section">
+                    <section class="notifications-panel">
+                        <div class="notifications-heading"><div><p>ACTIVITY</p><h3>Notifications</h3></div><button class="notifications-read-btn" onclick="markAllNotificationsRead()">Mark all as read</button></div>
+                        <div id="notifications-list" class="notifications-list" aria-live="polite"></div>
+                    </section>
+                </div>
+
+                <!-- INSIDER HUB VIEW -->
+                <div id="insiders-view" class="view-section">
+                    <section class="insiders-hub" aria-labelledby="insiders-hub-title">
+                        <div class="insiders-hub-heading"><div><p>BASE INSIDERS</p><h2 id="insiders-hub-title">Hot News</h2></div><span class="insiders-live-dot"><i></i> LIVE</span></div>
+                        <div id="insiders-carousel" class="insiders-carousel" aria-label="Hot News carousel"></div>
+                        <section class="insiders-updates" aria-labelledby="insiders-updates-title">
+                            <div class="insiders-updates-heading"><div><p>FROM INSIDERS</p><h3 id="insiders-updates-title">Latest updates</h3></div><span id="insiders-post-count"></span><button id="insiders-refresh" class="insiders-refresh" type="button" onclick="refreshInsidersNews()">Refresh</button></div>
+                            <div id="insiders-posts" class="insiders-posts"></div>
+                        </section>
+                    </section>
+                    <section class="reports-panel">
+                        <div class="notifications-heading"><div><p>MODERATION</p><h3>Post reports</h3></div></div>
+                        <div id="reports-list" class="reports-list"><p class="notifications-empty">No reports submitted from this device.</p></div>
+                    </section>
+                    <button id="insiderbot-launcher" class="insiderbot-launcher" type="button" onclick="toggleInsiderBot(true)" aria-label="Open Exiros Base assistant"><span>🔵</span><b>Exiros</b></button>
+                    <section id="insiderbot-panel" class="insiderbot-panel" role="dialog" aria-modal="false" aria-label="Exiros Base assistant chat" aria-hidden="true">
+                        <header class="insiderbot-header"><div><span class="insiderbot-title-icon">🔵</span><span><strong>Exiros.base.eth</strong><small>Exiros · Online · Official Base links & help</small></span></div><button type="button" onclick="toggleInsiderBot(false)" aria-label="Close Exiros">×</button></header>
+                        <div id="insiderbot-messages" class="insiderbot-messages" aria-live="polite"><div class="insiderbot-message assistant">Hi, I’m Exiros.base.eth 🔵\n\nI can share official Base links and help with Discord, bridging, transactions, Guild, wallets, and builders—even when AI is offline.</div></div>
+                        <div class="insiderbot-prompts"><button type="button" onclick="askInsiderBot('Official Base links')">Base links</button><button type="button" onclick="askInsiderBot('How do I bridge to Base?')">Bridge</button><button type="button" onclick="askInsiderBot('How do I check a transaction?')">Transaction</button><button type="button" onclick="askInsiderBot('Base Discord')">Discord</button></div>
+                        <form class="insiderbot-composer" onsubmit="askInsiderBot(); return false;"><input id="insiderbot-input" maxlength="1200" placeholder="Ask anything…" autocomplete="off"><button type="submit" aria-label="Send message">↑</button></form>
+                    </section>
+                </div>
+
+                <!-- PROFILE VIEW -->
+                <div id="profile-view" class="view-section">
+                    <div class="profile-card">
+                        <div class="profile-hero-row">
+                            <div class="profile-pic-large-container">
+                                <div class="profile-pic-large" id="current-profile-pic"></div>
+                                <label class="edit-pic-overlay" title="Upload custom avatar">
+                                    <span>✎</span>
+                                    <input type="file" id="profile-pic-input" accept="image/*" onchange="updateCustomProfilePic(event)">
+                                </label>
+                            </div>
+                            <div class="profile-hero-actions">
+                                <button class="profile-rank-badge" onclick="openBadgesModal()" aria-label="View rank badges"><span>RANK</span><strong id="profile-rank-label">BRONZE</strong><b>✦</b></button>
+                                <button class="disconnect-btn-top" onclick="disconnectWallet()" aria-label="Disconnect wallet" title="Disconnect wallet">⏻</button>
+                            </div>
+                        </div>
+
+                        <div class="profile-identity-copy">
+                            <h2 class="profile-name" id="profile-name-title">Not Connected</h2>
+                            <div class="profile-wallet-line"><span id="connected-wallet-address">Not connected</span><button id="copy-wallet-button" class="wallet-inline-button" onclick="copyConnectedWallet()" aria-label="Copy wallet address" title="Copy address">⧉</button><a id="wallet-explorer-link" class="wallet-inline-button" href="https://basescan.org" target="_blank" rel="noopener" aria-label="Open on BaseScan" title="Open in BaseScan">↗</a></div>
+                            <p class="profile-handle" id="profile-handle-tag">Base Mainnet · Smart Wallet</p>
+                            <div id="ens-container" class="profile-basename"><a href="https://www.base.org/names" target="_blank" class="buy-ens-link">＋ Get a Base Name</a></div>
+                        </div>
+
+                        <section class="profile-bio-section" aria-label="Profile bio">
+                            <div class="profile-bio-heading"><span>Bio</span><button onclick="toggleBioEditor()" aria-label="Edit bio">✎</button></div>
+                            <p id="profile-bio-text" class="profile-bio-empty">Add a short bio to tell the community what you are building.</p>
+                            <div id="profile-bio-editor" class="profile-bio-editor hidden"><input id="profile-bio-input" type="text" maxlength="120" placeholder="Building on Base…" onkeydown="if(event.key==='Enter') saveProfileBio()"><button onclick="saveProfileBio()">Save</button></div>
+                        </section>
+
+                        <section class="profile-social-links" aria-label="Social accounts">
+                            <div id="farcaster-box-container" class="profile-social-link"></div>
+                        </section>
+
+                        <section id="profile-social-summary" class="profile-social-summary" aria-label="Combined social profile statistics">
+                            <button class="profile-stat" onclick="openFarcasterSocialModal('followers')">
+                                <strong id="profile-total-followers">0</strong><span>Followers</span>
+                            </button>
+                            <button class="profile-stat" onclick="openFarcasterSocialModal('following')">
+                                <strong id="profile-following-count">0</strong><span>Following</span>
+                            </button>
+                            <div class="profile-score" aria-label="Neynar score">
+                                <strong id="profile-neynar-score">—</strong><span>Neynar score</span>
+                            </div>
+                        </section>
+
+                        <section class="profile-share-section" aria-labelledby="profile-share-title">
+                            <div><p>INVITE FRIENDS</p><h3 id="profile-share-title">Share your Base journey</h3><span id="profile-share-summary">0 XP · 0 quests completed</span></div>
+                            <div class="profile-share-actions">
+                                <button type="button" onclick="shareProfileCard()">✦ Share card</button>
+                                <button type="button" class="profile-referral-button" onclick="copyProfileReferralLink()">🔗 Copy invite</button>
+                            </div>
+                        </section>
+
+                        <section class="builder-code-checker" aria-labelledby="builder-checker-title">
+                            <div><p>ATTRIBUTION CHECK</p><h3 id="builder-checker-title">Verify your Builder Code</h3><span>Paste a Base Mainnet transaction hash to check for <b>bc_thovbfqm</b>.</span></div>
+                            <form onsubmit="checkBuilderCode(); return false;">
+                                <input id="builder-code-hash" type="text" inputmode="text" autocomplete="off" spellcheck="false" maxlength="66" placeholder="0x transaction hash" aria-label="Base transaction hash">
+                                <button type="submit">Check</button>
+                            </form>
+                            <p id="builder-code-result" class="builder-code-result" aria-live="polite"></p>
+                        </section>
+                    </div>
+
+                    <section class="profile-posts-section">
+                        <div class="profile-posts-heading"><div><p>Your activity</p><h3>Your posts</h3></div><span id="profile-post-count">0 posts</span></div>
+                        <div id="profile-posts-container" class="profile-posts-container">
+                            <p class="profile-posts-empty">Your posts will appear here on this device.</p>
+                        </div>
+                    </section>
+
+                    <footer class="app-footer" aria-label="Legal and support">
+                        <span>© 2026 Base Insiders</span>
+                        <a href="/terms" target="_blank" rel="noopener">Terms</a>
+                        <a href="/privacy" target="_blank" rel="noopener">Privacy</a>
+                        <button type="button" onclick="openLegalModal()">Safety &amp; support</button>
+                    </footer>
+                </div>
+
+                <!-- TASKS VIEW — task definitions live in tasks/tasks.js -->
+                <div id="tasks-view" class="view-section">
+                    <section class="tasks-section">
+                        <div class="tasks-title">
+                            <div><p class="tasks-eyebrow">ONCHAIN REWARDS</p><span>Quests & Tasks</span></div>
+                            <span id="completed-count" class="tasks-count-span">0/0 completed</span>
+                        </div>
+                        <section class="tasks-progress-summary" aria-label="Rank and quest progress">
+                            <div class="tasks-rank-row"><button class="tasks-rank-button" onclick="openBadgesModal()"><span>YOUR RANK</span><strong id="tasks-rank-label">Bronze</strong><b>✦</b></button><span id="tasks-remaining-count" class="tasks-remaining-count">0 quests remaining</span></div>
+                            <div class="level-progress-container">
+                                <div class="level-info-row"><span id="current-xp-text">0 XP</span><span id="tier-badge-container" class="tier-badge tier-bronze">Bronze Tier</span></div>
+                                <div class="progress-bar-bg"><div class="progress-bar-fill" id="xp-progress-bar"></div></div>
+                                <div class="next-tier-text" id="next-tier-target">Next Tier at 101 XP</div>
+                            </div>
+                        </section>
+                        <div id="tasks-list-container"></div>
+                    </section>
+                </div>
+            </main>
+
+            <div class="bottom-nav-container">
+                <nav class="bottom-nav-3d">
+                    <button class="nav-item active" onclick="switchTab('feed')" ondblclick="refreshFeed()" id="nav-feed" aria-label="Feed" title="Feed (double-click to refresh)">
+                        <span class="nav-sphere" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></span>
+                    </button>
+                    <button class="nav-item notification-nav-item" onclick="switchTab('notifications')" id="nav-notifications" aria-label="Notifications" title="Notifications">
+                        <span class="nav-sphere" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg><i id="notification-unread-dot" class="notification-unread-dot hidden"></i></span>
+                    </button>
+                    <button class="nav-item" onclick="switchTab('insiders')" id="nav-insiders" aria-label="Insiders" title="Insiders">
+                        <span class="nav-sphere" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9h-9z"/><path d="M13 2v10h10"/></svg></span>
+                    </button>
+                    <button class="nav-item" onclick="switchTab('tasks')" id="nav-tasks" aria-label="Tasks" title="Tasks">
+                        <span class="nav-sphere" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="m8 10 1.5 1.5L12 8.5M8 16l1.5 1.5L12 14.5M14 10h2M14 16h2"/></svg></span>
+                    </button>
+                    <button class="nav-item" onclick="switchTab('profile')" id="nav-profile" aria-label="Profile" title="Profile">
+                        <span class="nav-sphere" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 21c.8-4 3.3-6 7.5-6s6.7 2 7.5 6"/></svg></span>
+                    </button>
+                </nav>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript Logic -->
+    <script>
+        let userAddress = null;
+        let attachedImageBase64 = null;
+        let userProfileAvatar = "";
+        let userTotalXP = 0;
+        let claimedTasksCount = 0;
+        let userPosts = [];
+        let connectedXHandle = '';
+        let farcasterProfile = null;
+        let farcasterSocialState = { type: 'followers', cursor: null, loading: false };
+
+        // --- Comments, likes-on-comments, and follow state ---
+        // NOTE: this is a static front-end file with no backend/database. "Other people's"
+        // Community posts and comments are loaded from the authenticated server API.
+        let commentsStore = {};      // postId -> [ { id, author:{name,avatar}, text, likes, liked, replies:[] } ]
+        let commentIdCounter = 1;
+        let followedUsers = new Set(); // set of authorId strings
+        let claimedTaskIds = new Set();
+        let currentFeedMode = 'foryou'; // 'foryou' | 'following'
+        let notifications = [];
+        let reports = [];
+        const profileDirectory = new Map();
+        const loadedCommentPostIds = new Set();
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function registerProfile(author) {
+            if (author && author.id) profileDirectory.set(author.id, author);
+        }
+
+        function openUserProfileModal(authorId) {
+            if (authorId === 'me' || authorId === currentAppUserId()) return switchTab('profile');
+            const profile = profileDirectory.get(authorId);
+            if (!profile) return;
+            document.getElementById('user-profile-avatar').style.backgroundImage = `url('${profile.avatar || ''}')`;
+            document.getElementById('user-profile-name').textContent = profile.name || 'Base Insider';
+            document.getElementById('user-profile-handle').textContent = profile.handle || '';
+            const follow = document.getElementById('user-profile-follow');
+            follow.classList.remove('hidden');
+            follow.textContent = followedUsers.has(authorId) ? 'Following' : 'Follow';
+            follow.onclick = () => { toggleFollow(authorId); openUserProfileModal(authorId); };
+            document.getElementById('user-profile-modal').style.display = 'flex';
+        }
+
+        function closeUserProfileModal() {
+            document.getElementById('user-profile-modal').style.display = 'none';
+        }
+
+        let walletSdk = null;
+        let coinbaseProvider = null;
+        let providerListenersAttached = false;
+        let loginInFlight = false;
+        const BASE_CHAIN_ID = 8453;
+        const BASE_CHAIN_HEX = '0x2105';
+        const LOGIN_SESSION_KEY = 'base-insiders-login-session-v1';
+        const FARCASTER_PROFILE_STORAGE_KEY = 'base-insiders-farcaster-profiles-v1';
+        const APP_STATE_STORAGE_KEY = 'base-insiders-user-state-v1';
+        // A local/demo session remains active until the user explicitly disconnects. Production
+        // deployments using authApiUrl keep their server-controlled expiry instead.
+        const LOGIN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+        function getAllUserAppStates() {
+            try { return JSON.parse(localStorage.getItem(APP_STATE_STORAGE_KEY) || '{}') || {}; }
+            catch (_) { return {}; }
+        }
+
+        function persistUserAppState() {
+            if (!userAddress) return;
+            const states = getAllUserAppStates();
+            const key = userAddress.toLowerCase();
+            states[key] = {
+                ...(states[key] || {}),
+                followedUsers: [...followedUsers],
+                claimedTaskIds: [...claimedTaskIds],
+                posts: userPosts,
+                comments: commentsStore,
+                notifications,
+                reports,
+                avatar: userProfileAvatar || '',
+                bio: document.getElementById('profile-bio-text')?.classList.contains('profile-bio-empty') ? '' : (document.getElementById('profile-bio-text')?.textContent || ''),
+                xHandle: connectedXHandle,
+                totalXP: userTotalXP,
+                claimedTasksCount,
+                updatedAt: Date.now()
+            };
+            try { localStorage.setItem(APP_STATE_STORAGE_KEY, JSON.stringify(states)); }
+            catch (error) { console.error('Could not save Base Insiders app data.', error); }
+        }
+
+        function restoreUserAppState(address) {
+            const state = getAllUserAppStates()[address.toLowerCase()] || {};
+            followedUsers = new Set(Array.isArray(state.followedUsers) ? state.followedUsers : []);
+            claimedTaskIds = new Set(Array.isArray(state.claimedTaskIds) ? state.claimedTaskIds : []);
+            userPosts = Array.isArray(state.posts) ? state.posts : [];
+            commentsStore = state.comments && typeof state.comments === 'object' ? state.comments : {};
+            notifications = Array.isArray(state.notifications) ? state.notifications.filter(item => item.type === 'comment' || item.type === 'reaction' || item.type === 'transaction') : [];
+            reports = Array.isArray(state.reports) ? state.reports : [];
+            userTotalXP = Number(state.totalXP) || 0;
+            claimedTasksCount = Number(state.claimedTasksCount) || claimedTaskIds.size;
+            setProfileBio(state.bio || '');
+            setXAccountStatus('');
+            return state;
+        }
+
+        function notificationTime(timestamp) {
+            const seconds = Math.max(1, Math.floor((Date.now() - Number(timestamp || Date.now())) / 1000));
+            if (seconds < 60) return 'Just now';
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+            return `${Math.floor(seconds / 86400)}d`;
+        }
+
+        function shortTransactionId(value) {
+            const id = String(value || '');
+            return id.length > 18 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id;
+        }
+
+        function createTransactionNotification(label, callId) {
+            createNotification({
+                title: `${label} transaction submitted`,
+                body: 'Awaiting wallet and Base confirmation.',
+                type: 'transaction',
+                callId: String(callId || ''),
+                transactionStatus: 'Submitted'
+            });
+        }
+
+        function updateTransactionNotification(callId, changes) {
+            const item = notifications.find(notification => notification.type === 'transaction' && notification.callId === String(callId || ''));
+            if (!item) return;
+            Object.assign(item, changes, { createdAt: Date.now(), seen: false });
+            persistUserAppState();
+            renderNotifications();
+        }
+
+        // Social networks group repeated engagement on the same post into one inbox item.
+        // This avoids ten separate alerts when ten different people like or comment.
+        function updatePostEngagementNotification(postId, type, actor, added, commentId = '') {
+            const post = document.getElementById(postId);
+            const postOwnerId = post?.dataset.authorId;
+            if (!postOwnerId || !isCurrentUserId(postOwnerId) || !actor || isCurrentUserId(actor.id)) return;
+
+            const key = `engagement:${type}:${postId}`;
+            let item = notifications.find(notification => notification.groupKey === key);
+            if (!item && !added) return;
+            if (!item) {
+                item = {
+                    id: `notification-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                    groupKey: key,
+                    type,
+                    postId,
+                    actors: {},
+                    engagementCount: 0,
+                    createdAt: Date.now(),
+                    seen: false
+                };
+                notifications.unshift(item);
+            }
+
+            const actorId = String(actor.id || actor.name || 'unknown');
+            const actors = item.actors && typeof item.actors === 'object' ? item.actors : {};
+            if (added) actors[actorId] = String(actor.name || 'Someone'); else delete actors[actorId];
+            item.actors = actors;
+            item.engagementCount = Object.keys(actors).length;
+
+            if (!item.engagementCount) {
+                notifications = notifications.filter(notification => notification !== item);
+            } else {
+                const verb = type === 'reaction' ? 'liked' : 'commented on';
+                item.title = item.engagementCount === 1
+                    ? `${Object.values(item.actors)[0] || 'Someone'} ${verb} your post`
+                    : `${item.engagementCount} people ${verb} your post`;
+                item.body = type === 'reaction'
+                    ? `Your post has ${item.engagementCount} like${item.engagementCount === 1 ? '' : 's'}.`
+                    : `Your post has ${item.engagementCount} comment${item.engagementCount === 1 ? '' : 's'}.`;
+                // A grouped notification can offer an inline reply only when it identifies
+                // exactly one comment. For multiple comments, Open post is the safe action.
+                item.commentId = type === 'comment' && item.engagementCount === 1 ? commentId : '';
+                item.createdAt = Date.now();
+                item.seen = false;
+            }
+            notifications = notifications.slice(0, 100);
+            persistUserAppState();
+            renderNotifications();
+        }
+
+        function createNotification({ title, body, type = 'activity', txHash = '', callId = '', transactionStatus = '', postId = '', commentId = '', actor = null }) {
+            if (!userAddress) return;
+            if (type !== 'comment' && type !== 'reaction' && type !== 'transaction') return;
+            if (actor) registerProfile(actor);
+            notifications.unshift({ id: `notification-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, title, body, type, txHash, callId, transactionStatus, postId, commentId, actor, createdAt: Date.now(), seen: false });
+            notifications = notifications.slice(0, 100);
+            persistUserAppState();
+            renderNotifications();
+            if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
+                new Notification(title, { body, icon: '/insiders-logo.png' });
+            }
+        }
+
+        function renderNotifications() {
+            const dot = document.getElementById('notification-unread-dot');
+            if (dot) dot.classList.toggle('hidden', !notifications.some(item => !item.seen));
+            const list = document.getElementById('notifications-list');
+            if (!list) return;
+            if (!notifications.length) {
+                list.innerHTML = '<p class="notifications-empty">No activity yet. Community updates and transaction history will appear here.</p>';
+                return;
+            }
+            list.innerHTML = notifications.map(item => {
+                const explorer = item.txHash ? `<a class="notification-explorer" href="https://basescan.org/tx/${encodeURIComponent(item.txHash)}" target="_blank" rel="noopener">View on BaseScan ↗</a>` : '';
+                const canReply = item.type === 'comment' && item.postId && item.commentId;
+                const reply = canReply ? `<div class="notification-inline-reply" onclick="event.stopPropagation()"><input type="text" id="notification-reply-${item.id}" placeholder="Reply to ${escapeHtml(item.actor?.name || 'comment')}…" onkeydown="if(event.key==='Enter') submitNotificationReply('${item.id}', event)"><button onclick="submitNotificationReply('${item.id}', event)">Reply</button></div>` : '';
+                const isTransaction = item.type === 'transaction';
+                const isReaction = item.type === 'reaction';
+                const icon = item.actor ? `<button class="notification-icon notification-profile-link" onclick="event.stopPropagation(); openUserProfileModal('${item.actor.id || ''}')" aria-label="Open ${escapeHtml(item.actor.name || 'user')} profile" style="background-image:url('${item.actor.avatar || ''}')"></button>` : `<span class="notification-icon">${isTransaction ? '⛓' : (isReaction ? '💙' : '💬')}</span>`;
+                const transactionMeta = isTransaction ? `<span class="notification-tx-status">${escapeHtml(item.transactionStatus || 'Submitted')}</span>${item.callId ? `<code class="notification-call-id">${escapeHtml(shortTransactionId(item.callId))}</code>` : ''}` : '';
+                const preview = item.type === 'comment' ? `<p class="notification-comment-preview">“${escapeHtml(item.body)}”</p>` : '';
+                const openPost = item.postId ? '<span class="notification-open-post">Open post →</span>' : '';
+                const interactive = item.postId ? 'interactive' : '';
+                const events = item.postId ? `role="button" tabindex="0" onclick="openNotificationPost('${item.id}')" onkeydown="if(event.key==='Enter' || event.key===' '){event.preventDefault();openNotificationPost('${item.id}')}"` : '';
+                return `<article class="notification-item ${interactive} ${item.seen ? '' : 'unseen'}" ${events}>${icon}<div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.body)}</p>${preview}<div class="notification-actions"><small>${notificationTime(item.createdAt)}</small>${openPost}${transactionMeta}${explorer}</div>${reply}</div></article>`;
+            }).join('');
+        }
+
+        function markAllNotificationsRead() {
+            if (!notifications.some(item => !item.seen)) return;
+            notifications = notifications.map(item => ({ ...item, seen: true }));
+            persistUserAppState();
+            renderNotifications();
+        }
+
+        function openNotificationPost(notificationId) {
+            const item = notifications.find(notification => notification.id === notificationId);
+            if (!item || !item.postId) return;
+            item.seen = true;
+            persistUserAppState();
+            renderNotifications();
+            switchTab('feed');
+            const post = document.getElementById(item.postId);
+            if (!post) return;
+            post.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            post.classList.remove('notification-post-focus');
+            void post.offsetWidth;
+            post.classList.add('notification-post-focus');
+            setTimeout(() => post.classList.remove('notification-post-focus'), 1300);
+            if (item.commentId) {
+                const section = document.getElementById(`comments-section-${item.postId}`);
+                if (section && !section.classList.contains('open')) toggleCommentSection(item.postId);
+                setTimeout(() => {
+                    const comment = document.getElementById(`comment-${item.commentId}`);
+                    if (!comment) return;
+                    comment.classList.remove('notification-post-focus');
+                    void comment.offsetWidth;
+                    comment.classList.add('notification-post-focus');
+                    setTimeout(() => comment.classList.remove('notification-post-focus'), 1300);
+                }, 280);
+            }
+        }
+
+        async function submitNotificationReply(notificationId, event) {
+            if (event) event.stopPropagation();
+            const item = notifications.find(notification => notification.id === notificationId);
+            const field = document.getElementById(`notification-reply-${notificationId}`);
+            if (!item || !field) return;
+            const text = field.value.trim();
+            if (!text || !item.postId || !item.commentId) return;
+            const comment = (commentsStore[item.postId] || []).find(entry => entry.id === item.commentId);
+            if (!comment) return;
+            const replyButton = field.parentElement?.querySelector('button');
+            if (replyButton) replyButton.disabled = true;
+            let createdReply;
+            try {
+                const callId = await submitOnchainActivity('comment-reply', `${item.postId}:${item.commentId}:${text}`);
+                const payload = await communityRequest(`/api/community/posts/${encodeURIComponent(item.postId)}/comments`, {
+                    method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ body: text, parentId: item.commentId })
+                });
+                if (!payload.comment?.id) throw new Error('Could not save your reply to the community.');
+                createdReply = payload.comment;
+                updateTransactionNotification(callId, {
+                    title: 'Reply transaction submitted',
+                    body: 'Your reply was submitted on Base. Open the post to view it.',
+                    postId: item.postId,
+                    commentId: item.commentId
+                });
+            } catch (error) {
+                console.error('Notification reply transaction failed.', error);
+                showAppToast(error instanceof Error ? error.message : 'Reply transaction could not be submitted.');
+                return;
+            } finally {
+                if (replyButton) replyButton.disabled = false;
+            }
+            const actor = currentActor();
+            comment.replies = comment.replies || [];
+            comment.replies.push({ id: createdReply.id, author: actor, text, time: 'Just now', likes: 0, liked: false });
+            field.value = '';
+            updateCommentCountBadge(item.postId);
+            persistUserAppState();
+            notifyCommentRecipient(comment.author.id, {
+                title: `${actor.name} replied to your comment`, body: text, postId: item.postId, commentId: comment.id, actor
+            });
+        }
+
+        function requestDeviceNotificationPermission() {
+            if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
+        }
+
+        function renderReports() {
+            const list = document.getElementById('reports-list');
+            if (!list) return;
+            if (!reports.length) {
+                list.innerHTML = '<p class="notifications-empty">No reports submitted from this device.</p>';
+                return;
+            }
+            list.innerHTML = reports.map(report => `<article class="report-item"><strong>${escapeHtml(report.authorName || 'Post')}</strong><p>${escapeHtml(report.reason)}</p><small>${notificationTime(report.createdAt)}</small></article>`).join('');
+        }
+
+        function supportEmail() {
+            const value = String(window.BASE_INSIDERS_CONFIG?.supportEmail || '').trim();
+            return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? value : '';
+        }
+
+        function openLegalModal() {
+            document.getElementById('legal-modal').style.display = 'flex';
+        }
+
+        function closeLegalModal() {
+            document.getElementById('legal-modal').style.display = 'none';
+        }
+
+        function contactSupport(subject = 'Base Insiders support request', body = '') {
+            const email = supportEmail();
+            if (!email) {
+                showAppToast('Support email is not configured yet. The app owner must set supportEmail in config.js before launch.');
+                return false;
+            }
+            // Opens the Gmail app where the platform supports it; otherwise the
+            // Gmail web composer opens with the recipient and message prefilled.
+            const composeUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(email)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+            window.open(composeUrl, '_blank', 'noopener');
+            return true;
+        }
+
+        let insidersSlideIndex = 0;
+        let insidersSlideTimer = null;
+        let insidersNewsRefreshInFlight = null;
+        let insiderBotHistory = [];
+
+        function safeInsidersUrl(value) {
+            if (!value || value === '#') return '#';
+            try {
+                const url = new URL(value, window.location.origin);
+                return ['http:', 'https:'].includes(url.protocol) ? url.href : '#';
+            } catch (_) { return '#'; }
+        }
+
+        function renderInsidersHub() {
+            const content = window.BASE_INSIDERS_NEWS || {};
+            const banners = Array.isArray(content.banners) ? content.banners : [];
+            const posts = Array.isArray(content.posts) ? content.posts : [];
+            const carousel = document.getElementById('insiders-carousel');
+            const postsContainer = document.getElementById('insiders-posts');
+            const postCount = document.getElementById('insiders-post-count');
+            if (!carousel || !postsContainer) return;
+
+            clearInterval(insidersSlideTimer);
+            insidersSlideIndex = Math.min(insidersSlideIndex, Math.max(0, banners.length - 1));
+
+            if (!banners.length) {
+                carousel.innerHTML = '<p class="insiders-empty">Add your first Hot News banner in <code>insiders-news.js</code>.</p>';
+            } else {
+                carousel.innerHTML = `<div id="insiders-slide-track" class="insiders-slide-track" onscroll="syncInsidersSlide()" onmouseenter="pauseInsidersAutoplay()" onmouseleave="resumeInsidersAutoplay()" onpointerdown="pauseInsidersAutoplay()" onpointerup="resumeInsidersAutoplay()">${banners.map((banner, index) => {
+                    const href = safeInsidersUrl(banner.link);
+                    const image = banner.image ? `<img src="${escapeHtml(banner.image)}" alt="${escapeHtml(banner.title || 'Hot News artwork')}" class="insiders-slide-image">` : '<span class="insiders-slide-image insiders-image-placeholder">✦</span>';
+                    const copy = `<span class="insiders-slide-copy"><small>${escapeHtml(banner.eyebrow || 'HOT NEWS')}</small><strong>${escapeHtml(banner.title || 'Insiders update')}</strong>${banner.summary ? `<p>${escapeHtml(banner.summary)}</p>` : ''}${banner.cta ? `<b>${escapeHtml(banner.cta)} <span>→</span></b>` : ''}</span>`;
+                    return `<a class="insiders-slide ${index === insidersSlideIndex ? 'active' : ''}" href="${escapeHtml(href)}" ${href === '#' ? 'onclick="return false;"' : 'target="_blank" rel="noopener"'} aria-label="${escapeHtml(banner.title || 'Open Hot News')}">${image}${copy}</a>`;
+                }).join('')}</div><button class="insiders-carousel-arrow previous" onclick="showInsidersSlide(insidersSlideIndex - 1)" aria-label="Previous Hot News">‹</button><button class="insiders-carousel-arrow next" onclick="showInsidersSlide(insidersSlideIndex + 1)" aria-label="Next Hot News">›</button><div class="insiders-carousel-dots" role="tablist" aria-label="Choose Hot News slide">${banners.map((banner, index) => `<button class="${index === insidersSlideIndex ? 'active' : ''}" onclick="showInsidersSlide(${index})" aria-label="Show slide ${index + 1}"></button>`).join('')}</div>`;
+                requestAnimationFrame(() => showInsidersSlide(insidersSlideIndex, false));
+                resumeInsidersAutoplay();
+            }
+
+            if (postCount) postCount.textContent = `${posts.length} ${posts.length === 1 ? 'post' : 'posts'}`;
+            postsContainer.innerHTML = posts.length ? posts.map((post, index) => {
+                const href = safeInsidersUrl(post.link);
+                const link = href === '#' ? '' : `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(post.linkLabel || 'Read more')} →</a>`;
+                const avatar = post.avatar ? `style="background-image:url('${escapeHtml(post.avatar)}')"` : '';
+                const imageUrl = safeInsidersUrl(post.image);
+                const media = imageUrl === '#' ? '' : `<img class="insiders-update-image" src="${escapeHtml(imageUrl)}" alt="Image shared with ${escapeHtml(post.name || 'this update')}" loading="lazy">`;
+                const tip = `<button class="insiders-tip-button" type="button" onclick="tipInsidersUpdate(${index})" aria-label="Tip ETH for ${escapeHtml(post.name || 'this update')}"><span aria-hidden="true">♥</span> Tip ETH</button>`;
+                return `<article class="insiders-update-card"><div class="insiders-update-meta"><span class="insiders-update-avatar" ${avatar}></span><span><strong>${escapeHtml(post.name || 'Base Insiders')}</strong><small>${escapeHtml(post.handle || '@baseinsiders')} · ${escapeHtml(post.time || 'Now')}</small></span></div><p>${escapeHtml(post.text || '')}</p>${media}<div class="insiders-update-actions">${tip}${link}</div></article>`;
+            }).join('') : '<p class="insiders-empty">No Insiders updates yet.</p>';
+        }
+
+        // Every onchain action is user-initiated. No call is created if the wallet cannot
+        // guarantee ERC-8021 Builder Code attribution.
+        const INSIDERS_TIP_RECIPIENT = '0x0808c05c50dce70b136f808bcecadfc09a7369b7';
+        const BASE_BUILDER_CODE = 'bc_thovbfqm';
+        const BASE_MAINNET_CHAIN_ID = '0x2105';
+        const ERC_8021_MARKER = '80218021802180218021802180218021';
+        // A no-value call to this address creates a durable Base activity record without
+        // transferring user funds. The calldata contains only a SHA-256 commitment, never
+        // the post/comment text itself.
+        const ONCHAIN_ACTIVITY_RECIPIENT = '0x000000000000000000000000000000000000dEaD';
+
+        function builderCodeDataSuffix(builderCode) {
+            const bytes = new TextEncoder().encode(builderCode);
+            if (!bytes.length || bytes.length > 255) throw new Error('Invalid Base Builder Code.');
+            const encodedCode = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+            // ERC-8021 schema 0: code length + UTF-8 code + schema ID + marker.
+            return `0x${bytes.length.toString(16).padStart(2, '0')}${encodedCode}00${ERC_8021_MARKER}`;
+        }
+
+        function parseTipAmountToWei(amount) {
+            const normalized = String(amount || '').trim();
+            if (!/^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/.test(normalized)) throw new Error('Enter a valid ETH amount with up to 18 decimals.');
+            const [whole, fraction = ''] = normalized.split('.');
+            const wei = BigInt(whole) * 10n ** 18n + BigInt((fraction + '0'.repeat(18)).slice(0, 18));
+            if (wei <= 0n) throw new Error('Tip amount must be greater than 0 ETH.');
+            return `0x${wei.toString(16)}`;
+        }
+
+        async function activityCommitment(action, subject) {
+            const message = `base-insiders:${action}:${userAddress || ''}:${Date.now()}:${subject || ''}`;
+            const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(message));
+            const hex = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+            // "BI" marker + a 32-byte private commitment. This is valid calldata to an EOA.
+            return `0x4249${hex}`;
+        }
+
+        async function submitBuilderAttributedCall({ to, value = '0x0', data = '0x', label }) {
+            if (!coinbaseProvider) await initWalletSDK();
+            if (!coinbaseProvider) throw new Error('Connect a Base Smart Wallet before continuing.');
+
+            const accounts = await coinbaseProvider.request({ method: 'eth_requestAccounts' });
+            const from = accounts?.[0] || userAddress;
+            if (!from) throw new Error('No wallet account was returned.');
+            await ensureBaseNetwork();
+
+            const walletCapabilities = await coinbaseProvider.request({ method: 'wallet_getCapabilities', params: [from] });
+            if (walletCapabilities?.[BASE_MAINNET_CHAIN_ID]?.dataSuffix?.supported !== true) {
+                throw new Error('This wallet does not support required Builder Code attribution. No transaction was sent.');
+            }
+
+            const callId = await coinbaseProvider.request({
+                method: 'wallet_sendCalls',
+                params: [{
+                    version: '1.0', chainId: BASE_MAINNET_CHAIN_ID, from,
+                    calls: [{ to, value, data }],
+                    capabilities: { dataSuffix: { value: builderCodeDataSuffix(BASE_BUILDER_CODE), optional: false } }
+                }]
+            });
+            console.info(`${label || 'Base Insiders action'} submitted with Base Builder Code attribution.`, callId);
+            createTransactionNotification(label || 'Base Insiders', callId);
+            return callId;
+        }
+
+        async function submitOnchainActivity(action, subject) {
+            const data = await activityCommitment(action, subject);
+            return submitBuilderAttributedCall({ to: ONCHAIN_ACTIVITY_RECIPIENT, data, label: action });
+        }
+
+        async function tipInsidersUpdate(postIndex) {
+            const update = window.BASE_INSIDERS_NEWS?.posts?.[postIndex];
+            const amount = window.prompt(`Tip ETH to Base Insiders for “${update?.name || 'this update'}”.\n\nRecipient: ${INSIDERS_TIP_RECIPIENT}\nNetwork: Base Mainnet\nBuilder Code: ${BASE_BUILDER_CODE}\n\nEnter ETH amount:`, '0.001');
+            if (amount === null) return;
+
+            try {
+                const value = parseTipAmountToWei(amount);
+                if (!window.confirm(`Confirm tip of ${amount} ETH on Base Mainnet to\n${INSIDERS_TIP_RECIPIENT}\n\nThis transaction requires Builder Code ${BASE_BUILDER_CODE} for Base Dashboard attribution.`)) return;
+                const callId = await submitBuilderAttributedCall({ to: INSIDERS_TIP_RECIPIENT, value, label: 'Insiders tip' });
+                showAppToast(`Tip submitted for wallet confirmation. Builder Code ${BASE_BUILDER_CODE} is required on this call.`);
+                console.info('Insiders tip submitted with Base Builder Code attribution.', callId);
+            } catch (error) {
+                console.error('Insiders ETH tip failed.', error);
+                showAppToast(error instanceof Error ? error.message : 'Tip could not be submitted.');
+            }
+        }
+
+        async function refreshInsidersNews() {
+            if (insidersNewsRefreshInFlight) return insidersNewsRefreshInFlight;
+            const endpoint = window.BASE_INSIDERS_CONFIG?.insidersNewsApiUrl;
+            const button = document.getElementById('insiders-refresh');
+            if (!endpoint) return;
+            if (button) { button.disabled = true; button.textContent = 'Loading…'; }
+            insidersNewsRefreshInFlight = fetch(endpoint, { headers: { accept: 'application/json' } })
+                .then(async response => {
+                    const payload = await response.json();
+                    if (!response.ok) throw new Error(payload.error || 'Could not refresh updates.');
+                    const aiPosts = Array.isArray(payload.posts) ? payload.posts : [];
+                    if (!aiPosts.length) {
+                        showAppToast('No approved source post found. Check data/insiders-sources.json.');
+                        return;
+                    }
+                    window.BASE_INSIDERS_NEWS = window.BASE_INSIDERS_NEWS || {};
+                    window.BASE_INSIDERS_NEWS.posts = aiPosts.map(post => ({
+                        name: post.author?.name || 'Verified source', handle: post.author?.handle || '@source', avatar: post.author?.avatar || '', image: post.image || '',
+                        time: post.createdAt ? new Date(post.createdAt).toLocaleString() : 'Now', text: post.brief || post.text || '',
+                        link: post.url, linkLabel: 'View original on X'
+                    }));
+                    renderInsidersHub();
+                })
+                .catch(error => {
+                    console.warn('Insiders AI news unavailable:', error.message);
+                    showAppToast('AI news unavailable. Open this app through http://localhost:8000 and keep the local server running.');
+                })
+                .finally(() => { insidersNewsRefreshInFlight = null; if (button) { button.disabled = false; button.textContent = 'Refresh'; } });
+            return insidersNewsRefreshInFlight;
+        }
+
+        function toggleInsiderBot(open) {
+            const panel = document.getElementById('insiderbot-panel');
+            const launcher = document.getElementById('insiderbot-launcher');
+            if (!panel || !launcher) return;
+            if (open) {
+                panel.classList.remove('closing'); panel.classList.add('open'); panel.setAttribute('aria-hidden', 'false');
+                launcher.classList.remove('returning');
+                setTimeout(() => document.getElementById('insiderbot-input')?.focus(), 180);
+                return;
+            }
+            panel.classList.add('closing');
+            launcher.classList.add('returning');
+            setTimeout(() => { panel.classList.remove('open', 'closing'); panel.setAttribute('aria-hidden', 'true'); launcher.classList.remove('returning'); }, 280);
+            launcher.focus();
+        }
+
+        function addInsiderBotMessage(role, content, typing = false) {
+            const messages = document.getElementById('insiderbot-messages');
+            if (!messages) return null;
+            const item = document.createElement('div');
+            item.className = `insiderbot-message ${role}${typing ? ' typing' : ''}`;
+            // Answers can contain official URLs. Convert only http(s) URLs to links
+            // while keeping all non-link text as text nodes to avoid HTML injection.
+            const parts = String(content).split(/(https?:\/\/[^\s]+)/g);
+            parts.forEach(part => {
+                if (/^https?:\/\//.test(part)) {
+                    try {
+                        const url = new URL(part);
+                        const link = document.createElement('a');
+                        link.href = url.href; link.textContent = part; link.target = '_blank'; link.rel = 'noopener noreferrer';
+                        item.appendChild(link);
+                    } catch (_) { item.appendChild(document.createTextNode(part)); }
+                } else item.appendChild(document.createTextNode(part));
+            });
+            messages.appendChild(item); messages.scrollTop = messages.scrollHeight;
+            return item;
+        }
+
+        function insiderBotLocalHelp(question) {
+            const baseReply = window.getBaseManualReply?.(question);
+            if (baseReply) return baseReply;
+            const text = question.toLowerCase();
+            if (text.includes('news') || text.includes('source') || text.includes('x ')) return 'To add Insiders news, add the approved X post text and link to data/insiders-sources.json, then press Refresh. You can also add an avatar and a post image path.';
+            if (text.includes('task') || text.includes('xp')) return 'Open a quest in the Tasks tab. When it is complete, the Claim button becomes available and its XP is added to your profile progress.';
+            if (text.includes('wallet') || text.includes('safe')) return 'Never share a seed phrase, private key, password, or API key. A sign-in message is not a transaction, but always read a wallet request before approving it.';
+            return 'InsiderBot is offline. Restart the local server and check that the AgentRouter key and model are valid to enable answers to any question.';
+        }
+
+        async function askInsiderBot(preset) {
+            const input = document.getElementById('insiderbot-input');
+            const message = String(preset || input?.value || '').trim();
+            if (!message) return;
+            if (input) input.value = '';
+            addInsiderBotMessage('user', message);
+            const typing = addInsiderBotMessage('assistant', 'InsiderBot is thinking…', true);
+            try {
+                const response = await fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ message, history: insiderBotHistory }) });
+                const payload = await response.json();
+                if (!response.ok) throw new Error(payload.error || 'Chat unavailable');
+                typing.textContent = payload.reply; typing.classList.remove('typing');
+                insiderBotHistory.push({ role: 'user', content: message }, { role: 'assistant', content: payload.reply });
+            } catch (error) {
+                // The API returns a safe, user-facing reason for configuration, provider
+                // authorization, and rate-limit failures. Preserve it instead of hiding every
+                // server error behind the generic offline helper.
+                const detail = String(error?.message || '').trim();
+                const reply = detail && detail !== 'Failed to fetch' && detail !== 'Chat unavailable'
+                    ? detail
+                    : insiderBotLocalHelp(message);
+                typing.textContent = reply; typing.classList.remove('typing');
+                insiderBotHistory.push({ role: 'user', content: message }, { role: 'assistant', content: reply });
+            }
+        }
+
+        function showInsidersSlide(index, animate = true) {
+            const banners = window.BASE_INSIDERS_NEWS?.banners || [];
+            if (!banners.length) return;
+            insidersSlideIndex = ((index % banners.length) + banners.length) % banners.length;
+            const track = document.getElementById('insiders-slide-track');
+            if (track) track.scrollTo({ left: track.clientWidth * insidersSlideIndex, behavior: animate ? 'smooth' : 'auto' });
+            document.querySelectorAll('.insiders-carousel-dots button').forEach((button, buttonIndex) => button.classList.toggle('active', buttonIndex === insidersSlideIndex));
+            if (animate) resumeInsidersAutoplay();
+        }
+
+        function syncInsidersSlide() {
+            const track = document.getElementById('insiders-slide-track');
+            if (!track || !track.clientWidth) return;
+            const nextIndex = Math.round(track.scrollLeft / track.clientWidth);
+            if (nextIndex === insidersSlideIndex) return;
+            insidersSlideIndex = nextIndex;
+            document.querySelectorAll('.insiders-carousel-dots button').forEach((button, buttonIndex) => button.classList.toggle('active', buttonIndex === insidersSlideIndex));
+        }
+
+        function pauseInsidersAutoplay() {
+            clearInterval(insidersSlideTimer);
+            insidersSlideTimer = null;
+        }
+
+        function resumeInsidersAutoplay() {
+            const banners = window.BASE_INSIDERS_NEWS?.banners || [];
+            pauseInsidersAutoplay();
+            if (banners.length > 1) insidersSlideTimer = setInterval(() => showInsidersSlide(insidersSlideIndex + 1, true), 2000);
+        }
+
+        function reportPost(postId) {
+            const post = document.getElementById(postId);
+            if (!post) return;
+            document.getElementById(`menu-${postId}`)?.classList.remove('show');
+            if (reports.some(report => report.postId === postId)) {
+                showAppToast('You have already reported this post.');
+                return;
+            }
+            const reason = prompt('Why are you reporting this post?');
+            if (!reason || !reason.trim()) return;
+            const author = profileDirectory.get(post.dataset.authorId);
+            const report = { id: `report-${Date.now()}`, postId, authorName: author?.name || 'Base Insider', reason: reason.trim(), createdAt: Date.now() };
+            reports.unshift(report);
+            persistUserAppState();
+            renderReports();
+            const reportBody = `Reported post: ${report.authorName}\nReason: ${report.reason}\nSubmitted: ${new Date(report.createdAt).toISOString()}\n\nPlease review this report.`;
+            if (contactSupport('Base Insiders content report', reportBody)) {
+                createNotification({ title: 'Report hand-off started', body: 'Your email app has opened so you can send the report to the moderation team.' });
+            } else {
+                showAppToast('Report saved only on this device. Configure a support email to send it to moderators.');
+            }
+        }
+
+        let appToastTimer = null;
+        function showAppToast(message) {
+            const toast = document.getElementById('app-toast');
+            if (!toast) return;
+            clearTimeout(appToastTimer);
+            toast.textContent = message;
+            toast.classList.add('show');
+            appToastTimer = setTimeout(() => toast.classList.remove('show'), 3600);
+        }
+
+        function currentAppUserId() {
+            return userAddress ? `wallet:${userAddress.toLowerCase()}` : '';
+        }
+
+        function getAppFollowersCount() {
+            const myId = currentAppUserId();
+            if (!myId) return 0;
+            return Object.values(getAllUserAppStates()).filter(state =>
+                Array.isArray(state.followedUsers) && state.followedUsers.includes(myId)
+            ).length;
+        }
+
+        function renderAppSocialSummary() {
+            const farcasterFollowers = Number(farcasterProfile?.follower_count || 0);
+            const farcasterFollowing = Number(farcasterProfile?.following_count || 0);
+            const rawScore = Number(farcasterProfile?.score);
+            const followers = document.getElementById('profile-total-followers');
+            const following = document.getElementById('profile-following-count');
+            const score = document.getElementById('profile-neynar-score');
+            if (followers) followers.textContent = formatCount(farcasterFollowers + getAppFollowersCount());
+            if (following) following.textContent = formatCount(farcasterFollowing + followedUsers.size);
+            if (score) score.textContent = Number.isFinite(rawScore) ? rawScore.toFixed(2) : '—';
+        }
+
+        function setLoginStatus(message, isError = false) {
+            const el = document.getElementById('login-status');
+            if (!el) return;
+            el.textContent = message;
+            el.classList.toggle('error', isError);
+        }
+
+        function getStoredSession() {
+            try {
+                const session = JSON.parse(localStorage.getItem(LOGIN_SESSION_KEY) || 'null');
+                if (!session || !session.address) {
+                    localStorage.removeItem(LOGIN_SESSION_KEY);
+                    return null;
+                }
+                if (session.mode === 'local') {
+                    // Migrate prior local sessions too, so returning users are not prompted
+                    // again simply because the app was refreshed or reopened.
+                    if (!session.persistent) {
+                        session.persistent = true;
+                        localStorage.setItem(LOGIN_SESSION_KEY, JSON.stringify(session));
+                    }
+                    return session;
+                }
+                if (!session.expiresAt || Date.now() >= session.expiresAt) {
+                    localStorage.removeItem(LOGIN_SESSION_KEY);
+                    return null;
+                }
+                return session;
+            } catch (_) { return null; }
+        }
+
+        function getSavedFarcasterProfiles() {
+            try { return JSON.parse(localStorage.getItem(FARCASTER_PROFILE_STORAGE_KEY) || '{}') || {}; }
+            catch (_) { return {}; }
+        }
+
+        function saveFarcasterProfile(profile) {
+            if (!userAddress || !profile || !profile.fid) return;
+            const profiles = getSavedFarcasterProfiles();
+            profiles[userAddress.toLowerCase()] = profile;
+            localStorage.setItem(FARCASTER_PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+        }
+
+        function getSavedFarcasterProfile(address) {
+            if (!address) return null;
+            return getSavedFarcasterProfiles()[address.toLowerCase()] || null;
+        }
+
+        function setFarcasterConnectControl(isConnected) {
+            const container = document.getElementById('farcaster-box-container');
+            if (isConnected) {
+                const username = farcasterProfile?.username || farcasterProfile?.fid || 'Connected';
+                container.classList.remove('hidden');
+                container.innerHTML = `<div class="social-identity-wrap"><button class="social-identity-button" onclick="toggleSocialDisconnect(this)"><span class="social-icon">FC</span>@${escapeHtml(String(username))}</button><button class="social-disconnect-action" onclick="disconnectFarcaster(event)">Disconnect</button></div>`;
+                return;
+            }
+            container.classList.remove('hidden');
+            container.innerHTML = `<button class="social-connect-button" onclick="openFarcasterAuthModal()"><span class="social-icon">FC</span>Connect Farcaster</button>`;
+        }
+
+        function clearLocalSession() {
+            try { localStorage.removeItem(LOGIN_SESSION_KEY); } catch (_) {}
+        }
+
+        function makeLoginMessage(address, nonce) {
+            const issuedAt = new Date().toISOString();
+            return `${window.location.host} wants you to sign in with your Ethereum account:\n${address}\n\nSign in to Base Insiders. This request will not trigger a blockchain transaction.\n\nURI: ${window.location.origin}\nVersion: 1\nChain ID: ${BASE_CHAIN_ID}\nNonce: ${nonce}\nIssued At: ${issuedAt}`;
+        }
+
+        function makeNonce() {
+            const bytes = new Uint8Array(16);
+            crypto.getRandomValues(bytes);
+            return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        async function ensureBaseNetwork() {
+            const chainId = await coinbaseProvider.request({ method: 'eth_chainId' });
+            if (Number.parseInt(chainId, 16) === BASE_CHAIN_ID) return true;
+            try {
+                await coinbaseProvider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: BASE_CHAIN_HEX }] });
+                return true;
+            } catch (error) {
+                if (error && error.code === 4902) {
+                    await coinbaseProvider.request({ method: 'wallet_addEthereumChain', params: [{
+                        chainId: BASE_CHAIN_HEX,
+                        chainName: 'Base',
+                        nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+                        rpcUrls: ['https://mainnet.base.org'],
+                        blockExplorerUrls: ['https://basescan.org']
+                    }] });
+                    return true;
+                }
+                throw error;
+            }
+        }
+
+        async function verifyLoginWithServer(payload) {
+            const baseUrl = window.BASE_INSIDERS_CONFIG && window.BASE_INSIDERS_CONFIG.authApiUrl;
+            if (!baseUrl) return { mode: 'local' };
+            const response = await fetch(baseUrl.replace(/\/$/, '') + '/auth/verify', {
+                method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+            });
+            if (!response.ok) {
+                const result = await response.json().catch(() => null);
+                throw new Error(typeof result?.error === 'string' ? result.error : 'Your login could not be verified by the server.');
+            }
+            return { mode: 'server' };
+        }
+
+        async function getLoginNonce(address) {
+            const baseUrl = window.BASE_INSIDERS_CONFIG && window.BASE_INSIDERS_CONFIG.authApiUrl;
+            if (!baseUrl) return makeNonce();
+            const response = await fetch(baseUrl.replace(/\/$/, '') + '/auth/nonce?address=' + encodeURIComponent(address), {
+                credentials: 'include'
+            });
+            if (!response.ok) {
+                const result = await response.json().catch(() => null);
+                throw new Error(typeof result?.error === 'string' ? result.error : 'Could not create a secure login request.');
+            }
+            const payload = await response.json();
+            if (!payload || typeof payload.nonce !== 'string' || payload.nonce.length < 8) throw new Error('The server returned an invalid login request.');
+            return payload.nonce;
+        }
+
+        async function signInWallet(address) {
+            const nonce = await getLoginNonce(address);
+            const message = makeLoginMessage(address, nonce);
+            setLoginStatus('Confirm the secure login message in your wallet…');
+            const signature = await coinbaseProvider.request({ method: 'personal_sign', params: [message, address] });
+            const verification = await verifyLoginWithServer({ address, message, signature, nonce, chainId: BASE_CHAIN_ID });
+            const session = {
+                address: address.toLowerCase(),
+                issuedAt: Date.now(),
+                expiresAt: Date.now() + LOGIN_TTL_MS,
+                mode: verification.mode,
+                persistent: verification.mode === 'local'
+            };
+            localStorage.setItem(LOGIN_SESSION_KEY, JSON.stringify(session));
+        }
+
+        function attachProviderListeners() {
+            if (!coinbaseProvider || providerListenersAttached || !coinbaseProvider.on) return;
+            providerListenersAttached = true;
+            coinbaseProvider.on('accountsChanged', accounts => {
+                // Smart Wallet can report an empty account list while a page is restoring.
+                // That is not a user-initiated sign-out, so keep the local session intact.
+                if (!accounts || !accounts.length) return;
+                if (userAddress && accounts[0].toLowerCase() !== userAddress.toLowerCase()) {
+                    clearLocalSession();
+                    disconnectWallet();
+                    setLoginStatus('Wallet account changed. Please sign in again.');
+                }
+            });
+            coinbaseProvider.on('chainChanged', chainId => {
+                if (Number.parseInt(chainId, 16) !== BASE_CHAIN_ID) {
+                    // Keep the signed-in app session; Base is requested again only when a
+                    // transaction needs to be sent.
+                    setLoginStatus('Switch to Base Mainnet before sending a transaction.', true);
+                }
+            });
+            // Provider disconnect events are common during a reload and do not mean the user
+            // pressed the app's Disconnect control. The explicit button remains the only path
+            // that clears LOGIN_SESSION_KEY.
+            coinbaseProvider.on('disconnect', () => { setLoginStatus('Session will restore automatically.'); });
+        }
+
+        const defaultTasksData = [
+            { id: 1, title: "Join Base Community", xp: 15, desc: "Verify membership in official Base channels." },
+            { id: 2, title: "Make your first onchain post", xp: 10, desc: "Broadcast a message directly to the Base feed." },
+            { id: 3, title: "Interact with DustSwap contract", xp: 20, desc: "Execute smart contract interaction via mainnet." },
+            { id: 4, title: "Bridge funds to Base Mainnet", xp: 25, desc: "Transfer assets securely over official bridge." },
+            { id: 5, title: "Mint a Base Ecosystem NFT", xp: 30, desc: "Collect commemorative digital asset on Base." },
+            { id: 6, title: "Follow Base Insiders on Farcaster", xp: 10, desc: "Connect social footprint with ecosystem handles." },
+            { id: 7, title: "Swap tokens on Aerodrome", xp: 20, desc: "Perform decentralized exchange liquidity action." },
+            { id: 8, title: "Set up your Base Name (.base.eth)", xp: 35, desc: "Claim primary digital identity namespace." },
+            { id: 9, title: "Invite a friend to the App", xp: 15, desc: "Share referral link with prospective onchain users." },
+            { id: 10, title: "Complete Daily Onchain Check-in", xp: 10, desc: "Maintain daily streak consistency badge." }
+        ];
+        const tasksData = Array.isArray(window.BASE_INSIDERS_TASKS) ? window.BASE_INSIDERS_TASKS : defaultTasksData;
+
+        function getCoinbaseWalletSDKClass() {
+            return window.CoinbaseWalletSDK || null;
+        }
+
+        // Waits for the module-script import (see <head>) to finish, instead of assuming the
+        // global is already there the instant this runs.
+        async function waitForCoinbaseWalletSDKClass() {
+            let SDKClass = getCoinbaseWalletSDKClass();
+            if (SDKClass) return SDKClass;
+            return await new Promise((resolve) => {
+                const t = setTimeout(() => resolve(getCoinbaseWalletSDKClass()), 5000);
+                window.addEventListener('cbw-sdk-ready', () => {
+                    clearTimeout(t);
+                    resolve(getCoinbaseWalletSDKClass());
+                }, { once: true });
+            });
+        }
+
+        async function initWalletSDK() {
+            try {
+                const SDKClass = await waitForCoinbaseWalletSDKClass();
+                if (SDKClass) {
+                    // v4 SDK: appChainIds goes in the constructor, not makeWeb3Provider(). darkMode
+                    // is not a v4 constructor option (it's ignored/invalid), so it's dropped here.
+                    walletSdk = new SDKClass({
+                        appName: "Base Insiders",
+                        appLogoUrl: window.location.origin + "/insiders-logo.png",
+                        appChainIds: [8453] // Base Mainnet
+                    });
+                    // v4 SDK: makeWeb3Provider() takes a Preference object, not (rpcUrl, chainId).
+                    // "smartWalletOnly" is what forces the passkey / Smart Wallet popup instead of
+                    // the SDK silently deciding what kind of wallet to show.
+                    providerListenersAttached = false;
+                    coinbaseProvider = walletSdk.makeWeb3Provider({
+                        options: "smartWalletOnly"
+                    });
+                    attachProviderListeners();
+                } else {
+                    console.error("CoinbaseWalletSDK module never loaded.");
+                }
+            } catch (err) {
+                console.error("SDK Init Error:", err);
+            }
+        }
+
+        async function restoreWalletSession() {
+            const session = getStoredSession();
+            if (!session) return;
+            if (!coinbaseProvider) {
+                if (session.mode === 'local' && session.persistent) {
+                    await handleSuccessfulConnection(session.address);
+                    setLoginStatus('Session restored.');
+                }
+                return;
+            }
+            try {
+                const accounts = await coinbaseProvider.request({ method: 'eth_accounts' });
+                if (accounts && accounts[0] && accounts[0].toLowerCase() === session.address) {
+                    await handleSuccessfulConnection(accounts[0]);
+                    return;
+                }
+                // A different active wallet must never inherit the previous wallet's session.
+                if (accounts && accounts[0] && accounts[0].toLowerCase() !== session.address) {
+                    clearLocalSession();
+                    return;
+                }
+            }
+            catch (_) { /* Some Smart Wallets do not expose accounts silently after a reload. */ }
+
+            // The local app has already verified and saved this wallet's signed-in state. Do
+            // not force a new wallet popup merely because silent account access is unavailable.
+            if (session.mode === 'local' && session.persistent) {
+                await handleSuccessfulConnection(session.address);
+                setLoginStatus('Session restored.');
+            }
+        }
+
+        window.addEventListener('load', async () => {
+            await initWalletSDK();
+            await restoreWalletSession();
+            const xResult = new URLSearchParams(window.location.search);
+            if (xResult.has('x_connected')) showAppToast('X account connected successfully.');
+            if (xResult.has('x_error')) showAppToast(xResult.has('x_error') && xResult.get('x_error') === 'not_configured' ? 'X sign-in is not configured yet.' : 'X sign-in could not be completed.');
+            if (xResult.has('x_connected') || xResult.has('x_error')) window.history.replaceState({}, '', window.location.pathname);
+        });
+
+        async function connectCoinbaseSmartWallet() {
+            if (loginInFlight) return;
+            if (!document.getElementById('login-consent').checked) {
+                setLoginStatus('Please accept the login notice before continuing.', true);
+                return;
+            }
+            loginInFlight = true;
+            try {
+                if (!coinbaseProvider) await initWalletSDK();
+
+                if (!coinbaseProvider) {
+                    alert("Base Smart Wallet SDK failed to load. Please check your connection and refresh.");
+                    return;
+                }
+
+                // Only the Coinbase Smart Wallet provider is used here — no silent fallback to
+                // window.ethereum (MetaMask/etc). That fallback was why clicking "Base Smart
+                // Wallet" could log a user in via a different wallet without ever showing the
+                // passkey / Smart Wallet authentication prompt.
+                setLoginStatus('Connecting to Base Smart Wallet…');
+                const accounts = await coinbaseProvider.request({ method: 'eth_requestAccounts' });
+
+                if (accounts && accounts.length > 0) {
+                    await ensureBaseNetwork();
+                    await signInWallet(accounts[0]);
+                    handleSuccessfulConnection(accounts[0]);
+                    setLoginStatus('Signed in successfully.');
+                } else {
+                    alert("No wallet account was returned. Please try again.");
+                }
+            } catch (error) {
+                console.error("Connection error:", error);
+                if (error && error.code === 4001) {
+                    // user closed/rejected the passkey prompt - no need for a scary alert
+                    return;
+                }
+                setLoginStatus('Login was not completed. Please try again.', true);
+                alert("Wallet login failed: " + (error && error.message ? error.message : "Unknown error"));
+            } finally {
+                loginInFlight = false;
+            }
+        }
+
+        function renderTasks() {
+            const container = document.getElementById('tasks-list-container');
+            let html = '';
+            // Available quests always come first; completed ones form a history at the bottom.
+            const orderedTasks = [
+                ...tasksData.filter(task => !claimedTaskIds.has(task.id)),
+                ...tasksData.filter(task => claimedTaskIds.has(task.id))
+            ];
+            orderedTasks.forEach(task => {
+                const isClaimed = claimedTaskIds.has(task.id);
+                html += `
+                    <div class="task-item ${isClaimed ? 'finished' : ''}" id="task-card-${task.id}" onclick="${isClaimed ? '' : `toggleTaskExpand(event, ${task.id})`}">
+                        <div class="task-summary-row">
+                            <div class="task-left">
+                                <div class="task-icon">📌</div>
+                                <div class="task-info">
+                                    <h4>${task.title}</h4>
+                                    <p>Reward: +${task.xp} XP</p>
+                                </div>
+                            </div>
+                            <button class="claim-btn-pill ${isClaimed ? 'claimed' : 'locked'}" id="btn-task-${task.id}" onclick="claimTask(event, ${task.id}, ${task.xp})" ${isClaimed ? 'disabled' : 'disabled'}>${isClaimed ? (task.completeLabel || 'Claimed ✓') : (task.actionLabel || 'Claim')}</button>
+                        </div>
+                        <div class="task-details-collapse">
+                            <p class="task-hidden-desc">${task.desc}</p>
+                            ${task.link ? `<a class="task-direct-link" href="${escapeHtml(task.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(task.linkLabel || 'Open task ↗')}</a>` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+            container.innerHTML = html;
+        }
+
+        function toggleTaskExpand(event, taskId) {
+            if (event.target.closest('button')) return;
+            const card = document.getElementById(`task-card-${taskId}`);
+            if (!card) return;
+            card.classList.toggle('expanded');
+
+            // Opening a quest should take the user directly to its requested action (follow,
+            // like, Discord, etc.). The claim then unlocks when they return to the app.
+            const task = tasksData.find(item => item.id === taskId);
+            if (task?.link && /^https?:\/\//i.test(task.link)) {
+                window.open(task.link, '_blank', 'noopener,noreferrer');
+            }
+
+            // We cannot verify a follow/like from X in this static demo, so visiting its task
+            // link is the local completion signal that unlocks Claim.
+            const btn = document.getElementById(`btn-task-${taskId}`);
+            if (btn && !btn.classList.contains('claimed')) {
+                btn.classList.remove('locked');
+                btn.disabled = false;
+            }
+        }
+
+        async function claimTask(event, taskId, xpAmount) {
+            event.stopPropagation();
+            if (!userAddress || !getStoredSession()) {
+                alert('Your login session has expired. Please sign in again.');
+                disconnectWallet();
+                return;
+            }
+            const btn = document.getElementById(`btn-task-${taskId}`);
+            const card = document.getElementById(`task-card-${taskId}`);
+            const task = tasksData.find(item => item.id === taskId);
+            const actionLabel = task?.actionLabel || 'Claim';
+            if (!btn || !card) return;
+            if (btn.disabled || btn.classList.contains('claimed')) return; // still locked, or already claimed
+
+            btn.disabled = true;
+            btn.textContent = actionLabel === 'Check In' ? 'Checking in...' : 'Processing...';
+            try {
+                const callId = await submitOnchainActivity('task-claim', String(taskId));
+                updateTransactionNotification(callId, {
+                    title: `Task claim: ${task?.title || 'Base Insiders task'}`,
+                    body: `+${xpAmount} XP claim submitted on Base.`,
+                    transactionStatus: 'Claim submitted',
+                    transactionKind: 'task-claim',
+                    taskId
+                });
+                finishTaskClaim(card, btn, xpAmount);
+                showAppToast(`Task claim submitted on Base with Builder Code ${BASE_BUILDER_CODE}.`);
+            } catch (error) {
+                console.error("Claim tx error:", error);
+                btn.disabled = false;
+                btn.textContent = actionLabel;
+                alert("Claim failed: " + (error && error.message ? error.message : "Transaction was not confirmed."));
+            }
+        }
+
+        function finishTaskClaim(card, btn, xpAmount) {
+            const taskId = taskIdFromCard(card);
+            const task = tasksData.find(item => item.id === taskId);
+            btn.textContent = task?.completeLabel || "Claimed ✓";
+            btn.classList.add('claimed');
+            btn.classList.remove('locked');
+            card.classList.remove('expanded');
+            card.classList.add('finished');
+            card.onclick = null; // finished tasks no longer expand/collapse
+
+            // Fade out first, then settle the completed quest into the bottom history area.
+            const container = document.getElementById('tasks-list-container');
+            card.classList.add('task-completing');
+            setTimeout(() => {
+                container.appendChild(card);
+                card.classList.remove('task-completing');
+                card.classList.add('task-arrived');
+                setTimeout(() => card.classList.remove('task-arrived'), 460);
+            }, 340);
+
+            userTotalXP += xpAmount;
+            claimedTasksCount++;
+            claimedTaskIds.add(taskIdFromCard(card));
+            updateUserProfileLevel();
+            persistUserAppState();
+        }
+
+        function taskIdFromCard(card) {
+            return Number(String(card.id || '').replace('task-card-', ''));
+        }
+
+        function updateUserProfileLevel() {
+            const totalTasks = tasksData.length;
+            const remainingTasks = Math.max(0, totalTasks - claimedTasksCount);
+            document.getElementById('completed-count').textContent = `${claimedTasksCount}/${totalTasks} completed`;
+            document.getElementById('tasks-remaining-count').textContent = remainingTasks === 0 ? 'All quests complete' : `${remainingTasks} quest${remainingTasks === 1 ? '' : 's'} remaining`;
+            document.getElementById('current-xp-text').textContent = `${userTotalXP} XP`;
+
+            const badgeEl = document.getElementById('tier-badge-container');
+            const fillBar = document.getElementById('xp-progress-bar');
+            const targetText = document.getElementById('next-tier-target');
+
+            let tierName = "Bronze Tier", tierClass = "tier-bronze", percentage = 0, nextTargetStr = "";
+
+            if (userTotalXP <= 100) {
+                tierName = "Bronze Tier"; tierClass = "tier-bronze"; percentage = (userTotalXP / 100) * 100; nextTargetStr = `Next Tier (Silver) at 101 XP`;
+            } else if (userTotalXP <= 500) {
+                tierName = "Silver Tier"; tierClass = "tier-silver"; percentage = ((userTotalXP - 101) / 399) * 100; nextTargetStr = `Next Tier (Platinum) at 501 XP`;
+            } else if (userTotalXP <= 1500) {
+                tierName = "Platinum Tier"; tierClass = "tier-platinum"; percentage = ((userTotalXP - 501) / 999) * 100; nextTargetStr = `Next Tier (Diamond) at 1501 XP`;
+            } else {
+                tierName = "Diamond Legend 💎"; tierClass = "tier-diamond"; percentage = 100; nextTargetStr = `Max Tier Reached!`;
+            }
+
+            badgeEl.className = `tier-badge ${tierClass}`;
+            badgeEl.textContent = tierName;
+            const rankLabel = document.getElementById('profile-rank-label');
+            if (rankLabel) rankLabel.textContent = tierName.replace(' Tier', '').replace(' Legend 💎', '');
+            const tasksRankLabel = document.getElementById('tasks-rank-label');
+            if (tasksRankLabel) tasksRankLabel.textContent = tierName.replace(' Tier', '').replace(' Legend 💎', '');
+            fillBar.style.width = Math.min(percentage, 100) + "%";
+            targetText.textContent = nextTargetStr;
+            updateProfileShareSummary();
+        }
+
+        function updateProfileShareSummary() {
+            const summary = document.getElementById('profile-share-summary');
+            if (!summary) return;
+            summary.textContent = `${userTotalXP} XP · ${claimedTasksCount} quest${claimedTasksCount === 1 ? '' : 's'} completed`;
+        }
+
+        // --- Real "Sign In With Farcaster" (SIWF) flow ---
+        // Instead of trusting a manually-typed FID (anyone could type any number and claim to be
+        // that user), this opens an actual Farcaster Auth relay channel. The user approves the
+        // login inside their own Warpcast app (via QR scan or deep link), Warpcast signs a
+        // Sign-In-With-Ethereum message with their Farcaster custody/auth key, and the relay
+        // hands back a verified signature + profile (fid, username, pfpUrl, displayName).
+        let fcPollAbort = null;
+
+        function getFcAppClient() {
+            return window.__fcAppClient || null;
+        }
+
+        async function openFarcasterAuthModal() {
+            document.getElementById('fc-auth-modal').style.display = 'flex';
+            const statusEl = document.getElementById('fc-auth-status');
+            const qrImg = document.getElementById('fc-qr-img');
+            const openLink = document.getElementById('fc-open-warpcast-link');
+
+            statusEl.textContent = "Generating sign-in request…";
+            qrImg.src = "";
+            openLink.href = "#";
+
+            let appClient = getFcAppClient();
+            if (!appClient) {
+                // module script may still be loading — wait briefly for it
+                appClient = await new Promise((resolve) => {
+                    const t = setTimeout(() => resolve(getFcAppClient()), 4000);
+                    window.addEventListener('fc-client-ready', () => {
+                        clearTimeout(t);
+                        resolve(getFcAppClient());
+                    }, { once: true });
+                });
+            }
+
+            if (!appClient) {
+                statusEl.textContent = "Farcaster sign-in failed to load. Please refresh and try again.";
+                return;
+            }
+
+            try {
+                const domain = window.location.hostname || "app.local";
+                const siweUri = window.location.origin || window.location.href;
+
+                const { data: channel } = await appClient.createChannel({
+                    siweUri: siweUri,
+                    domain: domain
+                });
+
+                qrImg.src = "https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=" + encodeURIComponent(channel.url);
+                openLink.href = channel.url;
+                statusEl.textContent = "Waiting for approval in Warpcast…";
+
+                fcPollAbort = { cancelled: false };
+                const thisPoll = fcPollAbort;
+
+                const status = await appClient.watchStatus({
+                    channelToken: channel.channelToken,
+                    timeout: 120000,
+                    interval: 1500,
+                    onResponse: ({ data }) => {
+                        if (thisPoll.cancelled) return;
+                        if (data && data.state === 'pending') {
+                            statusEl.textContent = "Waiting for approval in Warpcast…";
+                        }
+                    }
+                });
+
+                if (thisPoll.cancelled) return;
+
+                if (status && status.data && status.data.state === 'completed') {
+                    handleFarcasterAuthSuccess(status.data);
+                } else {
+                    statusEl.textContent = "Sign-in timed out. Please try again.";
+                }
+            } catch (err) {
+                console.error("Farcaster auth error:", err);
+                statusEl.textContent = "Sign-in failed. Please try again.";
+            }
+        }
+
+        function handleFarcasterAuthSuccess(fcData) {
+            // fcData.fid / username / displayName / pfpUrl come straight from the verified
+            // Sign-In-With-Farcaster signature — not user-entered input.
+            farcasterProfile = { ...fcData, follower_count: 0, following_count: 0 };
+            applyFarcasterProfile(farcasterProfile);
+            saveFarcasterProfile(farcasterProfile);
+            closeFarcasterAuthModal();
+            syncFarcasterSocialProfile(fcData);
+        }
+
+        function formatCount(value) {
+            const number = Number(value || 0);
+            return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(number);
+        }
+
+        function getFarcasterApiUrl() {
+            return window.BASE_INSIDERS_CONFIG && window.BASE_INSIDERS_CONFIG.farcasterSocialApiUrl;
+        }
+
+        async function fetchFarcasterSocial(action, params) {
+            const apiUrl = getFarcasterApiUrl();
+            if (!apiUrl) throw new Error('Farcaster social API is not configured.');
+            const url = new URL(apiUrl, window.location.origin);
+            url.searchParams.set('action', action);
+            Object.entries(params || {}).forEach(([key, value]) => {
+                if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
+            });
+            const response = await fetch(url.toString(), { credentials: 'include' });
+            if (!response.ok) throw new Error('Could not load Farcaster social data.');
+            return response.json();
+        }
+
+        function setFarcasterSocialStatus(message, isError = false) {
+            // Sync is intentionally silent: a connected profile should look clean even when
+            // the optional Neynar server proxy is not configured.
+        }
+
+        function applyFarcasterProfile(profile) {
+            if (!profile) return;
+            const pfp = profile.pfpUrl || profile.pfp_url;
+            const name = profile.displayName || profile.display_name || profile.username || `fid:${profile.fid}`;
+            const handle = profile.username || profile.fid;
+            if (pfp) setProfileAvatar(pfp);
+            document.getElementById('profile-name-title').textContent = name;
+            document.getElementById('profile-handle-tag').textContent = '@' + handle;
+            setFarcasterConnectControl(true);
+            renderFarcasterSocialSummary(profile);
+        }
+
+        function renderFarcasterSocialSummary(profile) {
+            const summary = document.getElementById('profile-social-summary');
+            summary.classList.remove('hidden');
+            renderAppSocialSummary();
+        }
+
+        function resetFarcasterSocialSummary() {
+            document.getElementById('profile-total-followers').textContent = '0';
+            document.getElementById('profile-following-count').textContent = '0';
+            document.getElementById('profile-neynar-score').textContent = '—';
+        }
+
+        async function syncFarcasterSocialProfile(authProfile) {
+            const fid = authProfile && authProfile.fid;
+            if (!fid) return;
+            farcasterProfile = { ...farcasterProfile, ...authProfile, follower_count: farcasterProfile?.follower_count || 0, following_count: farcasterProfile?.following_count || 0 };
+            renderFarcasterSocialSummary(farcasterProfile);
+            try {
+                const data = await fetchFarcasterSocial('profile', { fid });
+                const profile = data.user || (data.users && data.users[0]);
+                if (!profile) throw new Error('Farcaster profile was not found.');
+                farcasterProfile = { ...farcasterProfile, ...profile };
+                applyFarcasterProfile(farcasterProfile);
+                saveFarcasterProfile(farcasterProfile);
+            } catch (error) {
+                console.error('Farcaster social sync error:', error);
+            }
+        }
+
+        function openFarcasterSocialModal(type) {
+            if (!farcasterProfile || !farcasterProfile.fid) return;
+            farcasterSocialState = { type, cursor: null, loading: false };
+            document.getElementById('fc-social-title').textContent = type === 'followers' ? 'Followers' : 'Following';
+            document.getElementById('fc-social-modal').style.display = 'flex';
+            document.getElementById('fc-social-list').innerHTML = '<p class="fc-social-loading">Loading verified Farcaster accounts…</p>';
+            document.getElementById('fc-social-more').classList.add('hidden');
+            loadFarcasterSocialUsers(true);
+        }
+
+        function closeFarcasterSocialModal() {
+            document.getElementById('fc-social-modal').style.display = 'none';
+        }
+
+        async function loadMoreFarcasterSocialUsers() {
+            await loadFarcasterSocialUsers(false);
+        }
+
+        async function loadFarcasterSocialUsers(replace) {
+            if (farcasterSocialState.loading || !farcasterProfile) return;
+            farcasterSocialState.loading = true;
+            const list = document.getElementById('fc-social-list');
+            const moreButton = document.getElementById('fc-social-more');
+            moreButton.disabled = true;
+            try {
+                const data = await fetchFarcasterSocial(farcasterSocialState.type, {
+                    fid: farcasterProfile.fid, cursor: farcasterSocialState.cursor, limit: 25
+                });
+                const users = Array.isArray(data.users) ? data.users : [];
+                if (replace) list.innerHTML = '';
+                if (!users.length && replace) list.innerHTML = '<p class="fc-social-loading">No accounts found.</p>';
+                users.forEach((item) => {
+                    const user = item.user || item;
+                    const row = document.createElement('a');
+                    row.className = 'fc-social-user';
+                    row.target = '_blank'; row.rel = 'noopener';
+                    row.href = user.username ? `https://farcaster.xyz/${encodeURIComponent(user.username)}` : `https://farcaster.xyz/~/profiles/${user.fid}`;
+                    const safeName = escapeHtml(user.display_name || user.username || `FID ${user.fid}`);
+                    const safeHandle = escapeHtml(user.username ? '@' + user.username : `FID ${user.fid}`);
+                    const avatar = user.pfp_url ? `style="background-image:url('${String(user.pfp_url).replace(/'/g, '%27')}')"` : '';
+                    row.innerHTML = `<span class="fc-social-avatar" ${avatar}>${user.pfp_url ? '' : 'FC'}</span><span><strong>${safeName}</strong><small>${safeHandle}</small></span><span class="fc-social-user-count">${formatCount(user.follower_count)} followers</span>`;
+                    list.appendChild(row);
+                });
+                farcasterSocialState.cursor = data.next && data.next.cursor;
+                moreButton.classList.toggle('hidden', !farcasterSocialState.cursor);
+            } catch (error) {
+                console.error('Farcaster social list error:', error);
+                if (replace) list.innerHTML = '<p class="fc-social-loading">Could not load this list. Please try again.</p>';
+            } finally {
+                farcasterSocialState.loading = false;
+                moreButton.disabled = false;
+            }
+        }
+
+        function closeFarcasterAuthModal() {
+            if (fcPollAbort) fcPollAbort.cancelled = true;
+            document.getElementById('fc-auth-modal').style.display = 'none';
+        }
+
+        // Basenames (.base.eth) do NOT live behind the standard mainnet ENS Registry / Reverse
+        // Registrar, so ethers' generic provider.lookupAddress() can't find them — it's looking
+        // for contracts that simply don't exist on Base. Reverse resolution (address -> name)
+        // for Basenames requires calling Base's own L2Resolver contract directly with a
+        // specifically-computed reverse node hash (per Base's Basenames spec).
+        const BASENAME_L2_RESOLVER_ADDRESS = "0xC6d566A56A1aFf6508b41f6c90ff131615583BCD";
+        const BASENAME_L2_RESOLVER_ABI = ["function name(bytes32 node) view returns (string)"];
+
+        function convertChainIdToCoinType(chainId) {
+            if (chainId === 1) return "addr"; // Ethereum Mainnet
+            const coinType = (0x80000000 | chainId) >>> 0;
+            return coinType.toString(16).toUpperCase();
+        }
+
+        function convertReverseNodeToBytes(address, chainId) {
+            const addressFormatted = address.toLowerCase();
+            const addressNode = ethers.utils.solidityKeccak256(['string'], [addressFormatted.substring(2)]);
+            const chainCoinType = convertChainIdToCoinType(chainId);
+            const baseReverseNode = ethers.utils.namehash(`${chainCoinType.toUpperCase()}.reverse`);
+            return ethers.utils.solidityKeccak256(['bytes32', 'bytes32'], [baseReverseNode, addressNode]);
+        }
+
+        async function resolveEns(address) {
+            try {
+                const provider = new ethers.providers.JsonRpcProvider("https://mainnet.base.org");
+                const reverseNode = convertReverseNodeToBytes(address, 8453); // 8453 = Base Mainnet
+                const resolver = new ethers.Contract(BASENAME_L2_RESOLVER_ADDRESS, BASENAME_L2_RESOLVER_ABI, provider);
+                const name = await resolver.name(reverseNode);
+                return name && name.length > 0 ? name : null;
+            } catch (e) {
+                console.error("Basename resolve error:", e);
+                return null;
+            }
+        }
+
+        async function handleSuccessfulConnection(address) {
+            userAddress = address;
+            const savedAppState = restoreUserAppState(address);
+            resetFarcasterSocialSummary();
+            const shortAddr = address.substring(0, 6) + "..." + address.substring(address.length - 4);
+            document.getElementById('profile-name-title').textContent = "Onchain User";
+            document.getElementById('profile-handle-tag').textContent = shortAddr;
+            renderConnectedWallet(address);
+            
+            const ensName = await resolveEns(address);
+            checkAndSetBaseEns(ensName);
+            if(ensName) document.getElementById('profile-name-title').textContent = ensName;
+            
+            setProfileAvatar(`https://api.dicebear.com/7.x/identicon/svg?seed=${address}`);
+            if (savedAppState.avatar) setProfileAvatar(savedAppState.avatar);
+            renderTasks();
+            updateUserProfileLevel();
+            loadCommunityPosts();
+            syncFollowButtons();
+            renderAppSocialSummary();
+            renderNotifications();
+            renderReports();
+            const savedFarcasterProfile = getSavedFarcasterProfile(address);
+            if (savedFarcasterProfile) {
+                farcasterProfile = savedFarcasterProfile;
+                applyFarcasterProfile(farcasterProfile);
+                syncFarcasterSocialProfile(farcasterProfile);
+            } else {
+                setFarcasterConnectControl(false);
+            }
+            showAppContent();
+        }
+
+        function disconnectWallet() {
+            document.documentElement.classList.remove('restoring-session');
+            userAddress = null; attachedImageBase64 = null; userTotalXP = 0; claimedTasksCount = 0; userPosts = [];
+            farcasterProfile = null;
+            followedUsers = new Set(); claimedTaskIds = new Set();
+            notifications = [];
+            reports = [];
+            resetFarcasterSocialSummary();
+            closeFarcasterSocialModal();
+            clearLocalSession();
+            document.querySelectorAll('#posts-feed-container .post-item[data-author-id="me"]').forEach(post => post.remove());
+            renderTasks(); updateUserProfileLevel(); renderProfilePosts();
+            renderAppSocialSummary();
+            renderNotifications();
+            renderReports();
+            setFarcasterConnectControl(false);
+            
+            initWalletSDK();
+            document.getElementById('main-app').classList.add('hidden');
+            const overlay = document.getElementById('connect-overlay');
+            overlay.style.display = 'flex';
+            setTimeout(() => { overlay.style.opacity = '1'; }, 10);
+            document.getElementById('profile-name-title').textContent = "Not Connected";
+            document.getElementById('profile-handle-tag').textContent = "@0x0000";
+            renderConnectedWallet(null);
+            switchTab('feed');
+        }
+
+        function checkAndSetBaseEns(ensName) {
+            const ensContainer = document.getElementById('ens-container');
+            if (ensName) {
+                ensContainer.innerHTML = `<div class="ens-badge-box has-name">🌐 ${ensName}</div>`;
+            } else {
+                ensContainer.innerHTML = `<a href="https://www.base.org/names" target="_blank" class="buy-ens-link">⚡ Buy Base Name</a>`;
+            }
+        }
+
+        function showAppContent() {
+            document.documentElement.classList.remove('restoring-session');
+            document.getElementById('connect-overlay').style.opacity = '0';
+            document.getElementById('fc-auth-modal').style.display = 'none';
+            setTimeout(() => {
+                document.getElementById('connect-overlay').style.display = 'none';
+                document.getElementById('main-app').classList.remove('hidden');
+            }, 300);
+        }
+
+        function setProfileAvatar(url) {
+            userProfileAvatar = url;
+            const pPic = document.getElementById('current-profile-pic');
+            pPic.style.backgroundImage = `url('${url}')`; pPic.textContent = "";
+            const feedAvatar = document.getElementById('feed-user-avatar-icon');
+            feedAvatar.style.backgroundImage = `url('${url}')`; feedAvatar.textContent = "";
+        }
+
+        function formatWalletAddress(address) {
+            if (!address) return 'Not connected';
+            return `${address.slice(0, 6)}…${address.slice(-4)}`;
+        }
+
+        function renderConnectedWallet(address) {
+            const addressEl = document.getElementById('connected-wallet-address');
+            const copyButton = document.getElementById('copy-wallet-button');
+            const explorerLink = document.getElementById('wallet-explorer-link');
+            const isConnected = Boolean(address);
+
+            addressEl.textContent = formatWalletAddress(address);
+            addressEl.title = address || 'Connect a wallet to view your identity';
+            copyButton.disabled = !isConnected;
+            explorerLink.href = isConnected ? `https://basescan.org/address/${address}` : 'https://basescan.org';
+            explorerLink.style.pointerEvents = isConnected ? '' : 'none';
+        }
+
+        function setProfileBio(bio) {
+            const bioText = document.getElementById('profile-bio-text');
+            if (!bioText) return;
+            const value = String(bio || '').trim();
+            bioText.textContent = value || 'Add a short bio to tell the community what you are building.';
+            bioText.classList.toggle('profile-bio-empty', !value);
+        }
+
+        function toggleBioEditor() {
+            const editor = document.getElementById('profile-bio-editor');
+            const input = document.getElementById('profile-bio-input');
+            editor.classList.toggle('hidden');
+            if (!editor.classList.contains('hidden')) {
+                input.value = document.getElementById('profile-bio-text').classList.contains('profile-bio-empty') ? '' : document.getElementById('profile-bio-text').textContent;
+                input.focus();
+            }
+        }
+
+        function saveProfileBio() {
+            const input = document.getElementById('profile-bio-input');
+            setProfileBio(input.value);
+            document.getElementById('profile-bio-editor').classList.add('hidden');
+            persistUserAppState();
+        }
+
+        function setXAccountStatus(handle) {
+            const container = document.getElementById('x-social-container');
+            if (!container) return;
+            if (window.BASE_INSIDERS_CONFIG?.enableXSignIn !== true) {
+                connectedXHandle = '';
+                container.classList.add('hidden');
+                container.innerHTML = '';
+                return;
+            }
+            container.classList.remove('hidden');
+            const value = String(handle || '').trim();
+            connectedXHandle = value;
+            container.innerHTML = value
+                ? `<div class="social-identity-wrap"><button class="social-identity-button" onclick="toggleSocialDisconnect(this)"><span class="social-icon x-icon">𝕏</span>${escapeHtml(value)}</button><button class="social-disconnect-action" onclick="disconnectXAccount(event)">Disconnect</button></div>`
+                : `<button class="social-connect-button" onclick="connectXAccount()"><span class="social-icon x-icon">𝕏</span>Connect X</button>`;
+        }
+
+        function connectXAccount() {
+            window.location.assign('/api/x/auth');
+        }
+
+        async function syncXAccount() {
+            if (window.BASE_INSIDERS_CONFIG?.enableXSignIn !== true) {
+                setXAccountStatus('');
+                return;
+            }
+            try {
+                const response = await fetch('/api/x/session', { credentials: 'include' });
+                const profile = response.ok ? await response.json() : null;
+                setXAccountStatus(profile?.username ? `@${profile.username}` : '');
+            } catch (_) {
+                setXAccountStatus('');
+            }
+        }
+
+        function toggleSocialDisconnect(button) {
+            button.closest('.social-identity-wrap')?.classList.toggle('show-disconnect');
+        }
+
+        function disconnectFarcaster(event) {
+            event.stopPropagation();
+            farcasterProfile = null;
+            if (userAddress) {
+                const profiles = getSavedFarcasterProfiles();
+                delete profiles[userAddress.toLowerCase()];
+                localStorage.setItem(FARCASTER_PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+            }
+            setFarcasterConnectControl(false);
+            resetFarcasterSocialSummary();
+            renderAppSocialSummary();
+        }
+
+        function disconnectXAccount(event) {
+            event.stopPropagation();
+            setXAccountStatus('');
+            fetch('/api/x/session', { method: 'DELETE', credentials: 'include' }).catch(() => {});
+        }
+
+        function openBadgesModal() {
+            const badges = [
+                { name: 'Bronze Builder', detail: 'Reach 1 XP', minXp: 1, icon: '◈' },
+                { name: 'Silver Scout', detail: 'Reach 101 XP', minXp: 101, icon: '◉' },
+                { name: 'Platinum Creator', detail: 'Reach 501 XP', minXp: 501, icon: '✦' },
+                { name: 'Diamond Legend', detail: 'Reach 1501 XP', minXp: 1501, icon: '◆' }
+            ];
+            document.getElementById('badges-grid').innerHTML = badges.map(badge => {
+                const unlocked = userTotalXP >= badge.minXp;
+                return `<article class="badge-card ${unlocked ? 'unlocked' : 'locked'}"><span class="badge-icon">${badge.icon}</span><strong>${badge.name}</strong><small>${unlocked ? 'Unlocked' : badge.detail}</small></article>`;
+            }).join('');
+            document.getElementById('badges-modal').style.display = 'flex';
+        }
+
+        function closeBadgesModal() {
+            document.getElementById('badges-modal').style.display = 'none';
+        }
+
+        async function copyConnectedWallet() {
+            if (!userAddress) return;
+            const copyButton = document.getElementById('copy-wallet-button');
+            try {
+                await navigator.clipboard.writeText(userAddress);
+                copyButton.textContent = '✓';
+                copyButton.classList.add('copied');
+                copyButton.title = 'Copied';
+                setTimeout(() => {
+                    copyButton.textContent = '⧉';
+                    copyButton.classList.remove('copied');
+                    copyButton.title = 'Copy address';
+                }, 1500);
+            } catch (error) {
+                console.error('Could not copy wallet address:', error);
+            }
+        }
+
+        function updateCustomProfilePic(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = e => { setProfileAvatar(e.target.result); persistUserAppState(); };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        function renderPersistedUserPosts() {
+            const container = document.getElementById('posts-feed-container');
+            if (!container) return;
+            container.querySelectorAll('.post-item[data-author-id="me"]').forEach(post => post.remove());
+            const author = { id: 'me', name: document.getElementById('profile-name-title').textContent, avatar: userProfileAvatar, handle: '' };
+            [...userPosts].reverse().forEach(post => {
+                container.insertAdjacentHTML('afterbegin', buildPostHTML(post.id, author, post.text, post.image, post.time, true));
+                commentsStore[post.id] = commentsStore[post.id] || [];
+            });
+            renderProfilePosts();
+            applyFeedFilter();
+        }
+
+        function syncFollowButtons() {
+            document.querySelectorAll('.follow-btn[data-follow-author]').forEach(button => {
+                const isFollowing = followedUsers.has(button.dataset.followAuthor);
+                button.textContent = isFollowing ? 'Following' : 'Follow';
+                button.classList.toggle('following', isFollowing);
+            });
+        }
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.bottom-nav-3d .nav-item').forEach(el => el.classList.remove('active'));
+            const feedNavBar = document.getElementById('feed-nav-bar');
+
+            if (tabName === 'feed' || tabName === 'following') {
+                document.getElementById('feed-view').classList.add('active');
+                document.getElementById('nav-feed').classList.add('active');
+                feedNavBar.style.display = 'flex';
+
+                currentFeedMode = (tabName === 'following') ? 'following' : 'foryou';
+                document.getElementById('feed-tab-foryou').classList.toggle('active', currentFeedMode === 'foryou');
+                document.getElementById('feed-tab-following').classList.toggle('active', currentFeedMode === 'following');
+                applyFeedFilter();
+            } else if(tabName === 'insiders') {
+                document.getElementById('insiders-view').classList.add('active');
+                document.getElementById('nav-insiders').classList.add('active');
+                feedNavBar.style.display = 'none';
+                renderInsidersHub();
+                renderReports();
+            } else if(tabName === 'notifications') {
+                document.getElementById('notifications-view').classList.add('active');
+                document.getElementById('nav-notifications').classList.add('active');
+                feedNavBar.style.display = 'none';
+                requestDeviceNotificationPermission();
+                markAllNotificationsRead();
+            } else if(tabName === 'tasks') {
+                document.getElementById('tasks-view').classList.add('active');
+                document.getElementById('nav-tasks').classList.add('active');
+                feedNavBar.style.display = 'none';
+            } else if(tabName === 'profile') {
+                document.getElementById('profile-view').classList.add('active');
+                document.getElementById('nav-profile').classList.add('active');
+                feedNavBar.style.display = 'none';
+                renderProfilePosts();
+            }
+        }
+
+        function previewFile() {
+            const fileInput = document.getElementById('post-file-input');
+            if (fileInput.files && fileInput.files[0]) {
+                const reader = new FileReader();
+                reader.onload = e => { 
+                    attachedImageBase64 = e.target.result; 
+                    document.getElementById('file-name-display').textContent = "File attached successfully ✓";
+                };
+                reader.readAsDataURL(fileInput.files[0]);
+            }
+        }
+
+        // Builds the HTML for one post. `author` describes who wrote it (id/name/avatar/handle).
+        // isOwn=true hides the Follow button (you can't follow yourself) and enables edit/delete.
+        function buildPostHTML(postId, author, textVal, imageSrc, timeLabel, isOwn) {
+            registerProfile(author);
+            const followBtnHTML = isOwn ? '' :
+                `<button class="follow-btn ${followedUsers.has(author.id) ? 'following' : ''}"
+                         data-follow-author="${author.id}"
+                         onclick="toggleFollow('${author.id}')">${followedUsers.has(author.id) ? 'Following' : 'Follow'}</button>`;
+
+            const menuHTML = `
+                <div class="post-options-container">
+                    <button class="three-dots-btn" onclick="event.stopPropagation(); togglePostMenu('${postId}')">⋮</button>
+                    <div class="post-dropdown-menu" id="menu-${postId}">
+                        <button class="dropdown-item" onclick="editPost('${postId}')">✏️ Edit</button>
+                        <button class="dropdown-item delete" onclick="deletePost('${postId}')">🗑️ Delete</button>
+                        <button class="dropdown-item report" onclick="reportPost('${postId}')">⚑ Report</button>
+                    </div>
+                </div>`;
+
+            return `
+                <article class="post-item" id="${postId}" data-author-id="${author.id}">
+                    <div class="post-header">
+                        <div class="post-user-meta">
+                            <button class="user-pic post-profile-link" onclick="openUserProfileModal('${author.id}')" aria-label="Open ${escapeHtml(author.name)} profile" style="background-image: url('${author.avatar}');"></button>
+                            <div class="user-info">
+                                <strong>${escapeHtml(author.name)}</strong>
+                                <span>${author.handle ? author.handle + ' · ' : ''}${timeLabel}</span>
+                            </div>
+                            ${followBtnHTML}
+                        </div>
+                        ${menuHTML}
+                    </div>
+                    <div class="post-body">
+                        <p class="post-text-content">${escapeHtml(textVal || '')}</p>
+                        ${imageSrc ? `<img src="${imageSrc}" class="post-media-img">` : ''}
+                    </div>
+                    <div class="post-footer-actions">
+                        <div class="reaction-wrap" onmouseenter="showReactionPicker('${postId}')" onmouseleave="scheduleHideReactionPicker('${postId}')">
+                            <button class="action-btn reaction-trigger" data-reaction-post="${postId}" onpointerdown="startReactionHold(event, '${postId}')" onpointerup="endReactionHold(event, '${postId}', this)" onclick="toggleDefaultReaction(event, '${postId}', this)"><span class="reaction-icon">💙</span> <span class="like-count">0</span></button>
+                            <div class="reaction-picker" id="reaction-picker-${postId}" role="group" aria-label="Choose a reaction" onmouseenter="cancelHideReactionPicker()">
+                                <button onclick="reactToPost('${postId}','💙',this)">💙</button><button onclick="reactToPost('${postId}','👎',this)">👎</button><button onclick="reactToPost('${postId}','🙏🏻',this)">🙏🏻</button><button onclick="reactToPost('${postId}','😂',this)">😂</button><button onclick="reactToPost('${postId}','😱',this)">😱</button><button onclick="reactToPost('${postId}','😭',this)">😭</button><button onclick="reactToPost('${postId}','👀',this)">👀</button>
+                            </div>
+                        </div>
+                        <button class="action-btn comment-btn" id="comment-btn-${postId}" onclick="toggleCommentSection('${postId}')">💬 <span class="comment-count" id="comment-count-${postId}">0</span></button>
+                        <button class="action-btn" onclick="sharePost('${postId}')">🔗 Share</button>
+                    </div>
+                    <div class="post-comments-section" id="comments-section-${postId}">
+                        <div class="post-comments-inner">
+                            <div class="post-comments-inner-pad">
+                                <div class="comment-list-inline" id="comment-list-${postId}"></div>
+                                <div class="comment-input-row-inline">
+                                    <div class="comment-avatar mini" id="comment-input-avatar-${postId}"></div>
+                                    <input type="text" id="comment-input-${postId}" placeholder="Write a comment…" onkeydown="if(event.key==='Enter') submitComment('${postId}');">
+                                    <button class="comment-send-btn" id="comment-send-${postId}" onclick="submitComment('${postId}')">➤</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </article>`;
+        }
+
+        function communityAuthor(row) {
+            const profile = Array.isArray(row.profiles) ? row.profiles[0] : row.profiles;
+            const address = String(row.author_address || '');
+            return {
+                id: address,
+                name: profile?.display_name || `${address.slice(0, 6)}…${address.slice(-4)}` || 'Base Insider',
+                handle: profile?.handle || '',
+                avatar: profile?.avatar_url || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(address || 'base-insider')}`
+            };
+        }
+
+        async function communityRequest(path, init) {
+            const response = await fetch(path, init);
+            const contentType = response.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                throw new Error('Community API returned a web page instead of data. Deploy this project as a Next.js app on Vercel, then open the Vercel URL—not public/index.html directly.');
+            }
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || 'Community request failed.');
+            return payload;
+        }
+
+        async function loadCommunityPosts() {
+            const container = document.getElementById('posts-feed-container');
+            if (!container) return;
+            try {
+                const payload = await communityRequest('/api/community/posts', { headers: { accept: 'application/json' } });
+                const posts = Array.isArray(payload.posts) ? payload.posts : [];
+                container.innerHTML = '';
+                commentsStore = {};
+                loadedCommentPostIds.clear();
+                if (userAddress) {
+                    const address = userAddress.toLowerCase();
+                    userPosts = posts.filter(post => String(post.author_address || '').toLowerCase() === address).map(post => ({
+                        id: post.id,
+                        text: post.body,
+                        image: post.image_url,
+                        time: notificationTime(new Date(post.created_at).getTime())
+                    }));
+                    renderProfilePosts();
+                }
+                posts.forEach(post => {
+                    const author = communityAuthor(post);
+                    container.insertAdjacentHTML('beforeend', buildPostHTML(post.id, author, post.body, post.image_url, notificationTime(new Date(post.created_at).getTime()), isCurrentUserId(author.id)));
+                    commentsStore[post.id] = [];
+                });
+                applyFeedFilter();
+            } catch (error) {
+                console.error('Could not load community posts.', error);
+                container.innerHTML = '<p class="notifications-empty">Community posts are unavailable right now. Please refresh and try again.</p>';
+            }
+        }
+
+        async function refreshFeed() {
+            await loadCommunityPosts();
+        }
+
+        async function createNewPost() {
+            const textVal = document.getElementById('post-text-input').value.trim();
+            if (!textVal && !attachedImageBase64) return alert("Write something or attach file!");
+            if (attachedImageBase64) return showAppToast('Image posts need hosted storage before they can be published to the community. Please publish text only for now.');
+            if (!userAddress || !getStoredSession()) {
+                alert('Your login session has expired. Please sign in again.');
+                disconnectWallet();
+                return;
+            }
+
+            const draftPostId = `post-${Date.now()}`;
+            const publishButton = document.querySelector('.post-submit-btn');
+            if (publishButton) { publishButton.disabled = true; publishButton.textContent = 'Confirm transaction…'; }
+            let callId = '';
+            let createdPost;
+            try {
+                callId = await submitOnchainActivity('post', `${draftPostId}:${textVal}`);
+                const payload = await communityRequest('/api/community/posts', {
+                    method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ body: textVal })
+                });
+                if (!payload.post?.id) throw new Error('Could not save your post to the community.');
+                createdPost = payload.post;
+                updateTransactionNotification(callId, {
+                    title: 'Post transaction submitted',
+                    body: 'Your post was submitted on Base. Open the post to view it.',
+                    postId: createdPost.id
+                });
+            } catch (error) {
+                console.error('Post transaction failed.', error);
+                showAppToast(error instanceof Error ? error.message : 'Post transaction could not be submitted.');
+                return;
+            } finally {
+                if (publishButton) { publishButton.disabled = false; publishButton.textContent = 'Publish post'; }
+            }
+
+            const author = currentActor();
+
+            const postHTML = buildPostHTML(createdPost.id, author, textVal, null, "Just now", true);
+            document.getElementById('posts-feed-container').insertAdjacentHTML('afterbegin', postHTML);
+            commentsStore[createdPost.id] = [];
+            loadedCommentPostIds.add(createdPost.id);
+            userPosts.unshift({ id: createdPost.id, text: textVal, image: null, time: 'Just now' });
+            renderProfilePosts();
+            persistUserAppState();
+
+            document.getElementById('post-text-input').value = '';
+            attachedImageBase64 = null;
+            document.getElementById('file-name-display').textContent = '';
+            applyFeedFilter();
+            showAppToast(`Post submitted on Base with Builder Code ${BASE_BUILDER_CODE}.`);
+        }
+
+        function togglePostMenu(postId) {
+            document.querySelectorAll('.post-dropdown-menu').forEach(menu => {
+                if(menu.id !== `menu-${postId}`) menu.classList.remove('show');
+            });
+            document.getElementById(`menu-${postId}`)?.classList.toggle('show');
+        }
+
+        function deletePost(postId) {
+            if(confirm("Are you sure you want to delete this post?")) {
+                document.getElementById(postId)?.remove();
+                userPosts = userPosts.filter(post => post.id !== postId);
+                renderProfilePosts();
+                persistUserAppState();
+                applyFeedFilter();
+            }
+        }
+
+        function editPost(postId) {
+            const postElement = document.getElementById(postId);
+            if (!postElement) return;
+            const textContentEl = postElement.querySelector('.post-text-content');
+            if (!textContentEl) return;
+            const newText = prompt("Edit your post:", textContentEl.textContent);
+            if(newText !== null && newText.trim() !== "") {
+                const updatedText = newText.trim();
+                textContentEl.textContent = updatedText;
+                const post = userPosts.find(item => item.id === postId);
+                if (post) post.text = updatedText;
+                renderProfilePosts();
+                persistUserAppState();
+            }
+            document.getElementById(`menu-${postId}`)?.classList.remove('show');
+            document.getElementById(`profile-menu-${postId}`)?.classList.remove('show');
+        }
+
+        function renderProfilePosts() {
+            const container = document.getElementById('profile-posts-container');
+            const count = document.getElementById('profile-post-count');
+            if (!container || !count) return;
+            count.textContent = `${userPosts.length} ${userPosts.length === 1 ? 'post' : 'posts'}`;
+            if (!userPosts.length) {
+                container.innerHTML = '<p class="profile-posts-empty">Your posts will appear here on this device.</p>';
+                return;
+            }
+            const profilePosts = [...userPosts].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
+            container.innerHTML = profilePosts.map(post => `
+                <article class="profile-post-card ${post.pinned ? 'pinned' : ''}" id="profile-card-${post.id}">
+                    <div class="profile-post-meta"><span class="profile-post-dot"></span><span>${escapeHtml(post.time)}</span><span>Local</span>${post.pinned ? '<span class="pinned-post-label">📌 Pinned</span>' : ''}<div class="profile-post-options"><button class="three-dots-btn" onclick="event.stopPropagation(); toggleProfilePostMenu('${post.id}')" aria-label="Post options">⋮</button><div id="profile-menu-${post.id}" class="post-dropdown-menu"><button class="dropdown-item" onclick="togglePinPost('${post.id}')">${post.pinned ? '📌 Unpin post' : '📌 Pin post'}</button><button class="dropdown-item" onclick="editPost('${post.id}')">✏️ Edit</button><button class="dropdown-item delete" onclick="deletePost('${post.id}')">🗑️ Delete</button></div></div></div>
+                    ${post.text ? `<p>${escapeHtml(post.text)}</p>` : ''}
+                    ${post.image ? `<img src="${post.image}" alt="Post attachment">` : ''}
+                    <div class="profile-post-actions"><button class="${post.profileLiked ? 'liked' : ''}" onclick="toggleProfilePostLike('${post.id}', this)">♥ <span>${post.profileLikes || 0}</span></button><button onclick="openProfilePostComments('${post.id}')">💬 <span>${getPostCommentCount(post.id)}</span></button><button onclick="sharePost('${post.id}')">↗ Share</button></div>
+                </article>`).join('');
+        }
+
+        function getPostCommentCount(postId) {
+            return (commentsStore[postId] || []).reduce((total, comment) => total + 1 + (comment.replies || []).length, 0);
+        }
+
+        function toggleProfilePostLike(postId, button) {
+            const post = userPosts.find(item => item.id === postId);
+            if (!post) return;
+            post.profileLiked = !post.profileLiked;
+            post.profileLikes = Math.max(0, Number(post.profileLikes || 0) + (post.profileLiked ? 1 : -1));
+            button.classList.toggle('liked', post.profileLiked);
+            button.querySelector('span').textContent = post.profileLikes;
+            persistUserAppState();
+        }
+
+        function openProfilePostComments(postId) {
+            switchTab('feed');
+            const post = document.getElementById(postId);
+            if (!post) return;
+            post.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const section = document.getElementById(`comments-section-${postId}`);
+            if (section && !section.classList.contains('open')) toggleCommentSection(postId);
+        }
+
+        function toggleProfilePostMenu(postId) {
+            document.querySelectorAll('.profile-post-options .post-dropdown-menu').forEach(menu => {
+                if (menu.id !== `profile-menu-${postId}`) menu.classList.remove('show');
+            });
+            document.getElementById(`profile-menu-${postId}`)?.classList.toggle('show');
+        }
+
+        function togglePinPost(postId) {
+            const selectedPost = userPosts.find(post => post.id === postId);
+            if (!selectedPost) return;
+            const willPin = !selectedPost.pinned;
+            userPosts = userPosts.map(post => ({
+                ...post,
+                pinned: post.id === postId ? willPin : false
+            }));
+            renderProfilePosts();
+            persistUserAppState();
+            showAppToast(willPin ? 'Post pinned to the top of your profile.' : 'Post unpinned from your profile.');
+        }
+
+        let reactionHoldTimer = null;
+        let reactionHideTimer = null;
+        let reactionWasHeld = false;
+
+        function showReactionPicker(postId) { cancelHideReactionPicker(); document.getElementById(`reaction-picker-${postId}`)?.classList.add('show'); }
+        function hideReactionPicker(postId) { cancelHideReactionPicker(); document.getElementById(`reaction-picker-${postId}`)?.classList.remove('show'); }
+        function cancelHideReactionPicker() { clearTimeout(reactionHideTimer); }
+        function scheduleHideReactionPicker(postId) { cancelHideReactionPicker(); reactionHideTimer = setTimeout(() => hideReactionPicker(postId), 350); }
+        function startReactionHold(event, postId) {
+            reactionWasHeld = false;
+            reactionHoldTimer = setTimeout(() => { reactionWasHeld = true; showReactionPicker(postId); }, 420);
+        }
+        function endReactionHold(event, postId) { clearTimeout(reactionHoldTimer); }
+        function toggleDefaultReaction(event, postId, button) {
+            if (reactionWasHeld) { event.preventDefault(); reactionWasHeld = false; return; }
+            reactToPost(postId, '💙', null, button);
+        }
+        function reactToPost(postId, emoji, sourceButton, existingButton) {
+            const button = existingButton || document.querySelector(`[data-reaction-post="${postId}"]`);
+            if (!button) return;
+            const icon = button.querySelector('.reaction-icon');
+            const count = button.querySelector('.like-count');
+            const isSame = button.dataset.reaction === emoji;
+            button.dataset.reaction = isSame ? '' : emoji;
+            icon.textContent = isSame ? '💙' : emoji;
+            count.textContent = isSame ? Math.max(0, Number(count.textContent) - 1) : Math.max(1, Number(count.textContent) || 1);
+            button.classList.remove('reaction-pop'); void button.offsetWidth; button.classList.add('reaction-pop');
+            const float = document.createElement('span');
+            float.className = 'reaction-float'; float.textContent = isSame ? '💙' : emoji;
+            button.closest('.reaction-wrap').appendChild(float);
+            setTimeout(() => float.remove(), 700);
+            hideReactionPicker(postId);
+            updatePostEngagementNotification(postId, 'reaction', currentActor(), !isSame);
+        }
+
+        // Expands/collapses the inline comment thread directly under a post (animated via CSS
+        // grid-template-rows for a smooth height transition without measuring pixel heights).
+        function toggleCommentSection(postId) {
+            const section = document.getElementById(`comments-section-${postId}`);
+            const btn = document.getElementById(`comment-btn-${postId}`);
+            if (!section) return;
+
+            const isOpen = section.classList.contains('open');
+            if (isOpen) {
+                section.classList.remove('open');
+                if (btn) btn.classList.remove('active-thread');
+                return;
+            }
+
+            if (!commentsStore[postId]) commentsStore[postId] = [];
+            renderComments(postId);
+            loadCommunityComments(postId);
+
+            const avatarEl = document.getElementById(`comment-input-avatar-${postId}`);
+            if (avatarEl) avatarEl.style.backgroundImage = `url('${currentActor().avatar}')`;
+
+            section.classList.add('open');
+            if (btn) btn.classList.add('active-thread');
+
+            setTimeout(() => {
+                const input = document.getElementById(`comment-input-${postId}`);
+                if (input) input.focus();
+            }, 260);
+        }
+
+        function renderComments(postId) {
+            const list = commentsStore[postId] || [];
+            const container = document.getElementById(`comment-list-${postId}`);
+            if (!container) return;
+            if (list.length === 0) {
+                container.innerHTML = `<p class="comment-empty-state">No comments yet. Be the first to comment.</p>`;
+                return;
+            }
+            container.innerHTML = list.map(c => renderCommentHTML(postId, c)).join('');
+        }
+
+        async function loadCommunityComments(postId) {
+            if (loadedCommentPostIds.has(postId)) return;
+            try {
+                const payload = await communityRequest(`/api/community/posts/${encodeURIComponent(postId)}/comments`, { headers: { accept: 'application/json' } });
+                const comments = Array.isArray(payload.comments) ? payload.comments : [];
+                const roots = [];
+                const byId = new Map();
+                comments.forEach(row => byId.set(row.id, {
+                    id: row.id,
+                    author: communityAuthor(row),
+                    text: row.body,
+                    time: notificationTime(new Date(row.created_at).getTime()),
+                    likes: 0,
+                    liked: false,
+                    replies: []
+                }));
+                comments.forEach(row => {
+                    const comment = byId.get(row.id);
+                    const parent = row.parent_id ? byId.get(row.parent_id) : null;
+                    if (parent) parent.replies.push(comment); else roots.push(comment);
+                });
+                commentsStore[postId] = roots;
+                loadedCommentPostIds.add(postId);
+                renderComments(postId);
+                updateCommentCountBadge(postId);
+            } catch (error) {
+                console.error('Could not load community comments.', error);
+                const container = document.getElementById(`comment-list-${postId}`);
+                if (container) container.innerHTML = '<p class="comment-empty-state">Could not load comments. Please try again.</p>';
+            }
+        }
+
+        function renderCommentHTML(postId, c) {
+            const repliesHtml = (c.replies || []).map(r => `
+                <div class="comment-reply-item">
+                    <button class="comment-avatar mini post-profile-link" onclick="openUserProfileModal('${r.author.id || ''}')" aria-label="Open profile" style="background-image:url('${r.author.avatar}')"></button>
+                    <div class="comment-body">
+                        <div class="comment-bubble">
+                            <strong>${escapeHtml(r.author.name)}</strong><span class="comment-time">${r.time || 'Just now'}</span>
+                            <p>${escapeHtml(r.text)}</p>
+                        </div>
+                        <div class="comment-actions">
+                            <button class="comment-like-btn ${r.liked ? 'liked' : ''}" onclick="toggleCommentLike(event,'${postId}','${c.id}','${r.id}')"><span class="heart-icon">❤️</span> ${r.likes}</button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+
+            return `
+                <div class="comment-item" id="comment-${c.id}">
+                    <button class="comment-avatar post-profile-link" onclick="openUserProfileModal('${c.author.id || ''}')" aria-label="Open profile" style="background-image:url('${c.author.avatar}')"></button>
+                    <div class="comment-body">
+                        <div class="comment-bubble">
+                            <strong>${escapeHtml(c.author.name)}</strong><span class="comment-time">${c.time || 'Just now'}</span>
+                            <p>${escapeHtml(c.text)}</p>
+                        </div>
+                        <div class="comment-actions">
+                            <button class="comment-like-btn ${c.liked ? 'liked' : ''}" onclick="toggleCommentLike(event,'${postId}','${c.id}')"><span class="heart-icon">❤️</span> ${c.likes}</button>
+                            <button class="comment-reply-btn" onclick="toggleReplyInput('${c.id}')">↩ Reply</button>
+                        </div>
+                        <div class="reply-input-row" id="reply-input-${c.id}">
+                            <input type="text" id="reply-field-${c.id}" placeholder="Write a reply…" onkeydown="if(event.key==='Enter') submitReply('${postId}','${c.id}');">
+                            <button class="comment-send-btn" onclick="submitReply('${postId}','${c.id}')">➤</button>
+                        </div>
+                        <div class="comment-replies">${repliesHtml}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function currentActor() {
+            const actor = { id: currentAppUserId() || 'me', name: document.getElementById('profile-name-title').textContent, avatar: userProfileAvatar, handle: document.getElementById('profile-handle-tag').textContent };
+            registerProfile(actor);
+            return actor;
+        }
+
+        function isCurrentUserId(userId) {
+            return userId === 'me' || userId === currentAppUserId();
+        }
+
+        // A notification is written only for its recipient, never for the person who
+        // performed the action. The same payload can be sent by a shared API when the
+        // app is connected to a multi-user backend.
+        function notifyCommentRecipient(recipientId, payload) {
+            if (!recipientId || !isCurrentUserId(recipientId)) return;
+            if (payload.actor && isCurrentUserId(payload.actor.id)) return;
+            createNotification({ ...payload, type: 'comment' });
+        }
+
+        async function submitComment(postId) {
+            const field = document.getElementById(`comment-input-${postId}`);
+            if (!field) return;
+            const text = field.value.trim();
+            if (!text) return;
+            const sendButton = document.getElementById(`comment-send-${postId}`);
+            if (sendButton) sendButton.disabled = true;
+            let commentTransactionCallId = '';
+            let createdComment;
+            try {
+                commentTransactionCallId = await submitOnchainActivity('comment', `${postId}:${text}`);
+                const payload = await communityRequest(`/api/community/posts/${encodeURIComponent(postId)}/comments`, {
+                    method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ body: text })
+                });
+                if (!payload.comment?.id) throw new Error('Could not save your comment to the community.');
+                createdComment = payload.comment;
+            } catch (error) {
+                console.error('Comment transaction failed.', error);
+                showAppToast(error instanceof Error ? error.message : 'Comment transaction could not be submitted.');
+                return;
+            } finally {
+                if (sendButton) sendButton.disabled = false;
+            }
+            if (!commentsStore[postId]) commentsStore[postId] = [];
+            const actor = currentActor();
+            const comment = {
+                id: createdComment.id,
+                author: actor,
+                text, time: 'Just now', likes: 0, liked: false, replies: []
+            };
+            commentsStore[postId].push(comment);
+            updateTransactionNotification(commentTransactionCallId, {
+                title: 'Comment transaction submitted',
+                body: 'Your comment was submitted on Base. Open the post to view it.',
+                postId,
+                commentId: comment.id
+            });
+            field.value = '';
+            renderComments(postId);
+            updateCommentCountBadge(postId);
+            renderProfilePosts();
+            persistUserAppState();
+            updatePostEngagementNotification(postId, 'comment', actor, true, comment.id);
+            showAppToast(`Comment submitted on Base with Builder Code ${BASE_BUILDER_CODE}.`);
+        }
+
+        function toggleReplyInput(commentId) {
+            const row = document.getElementById(`reply-input-${commentId}`);
+            if (!row) return;
+            row.classList.toggle('open');
+            if (row.classList.contains('open')) {
+                setTimeout(() => {
+                    const f = document.getElementById(`reply-field-${commentId}`);
+                    if (f) f.focus();
+                }, 220);
+            }
+        }
+
+        async function submitReply(postId, commentId) {
+            const field = document.getElementById(`reply-field-${commentId}`);
+            if (!field) return;
+            const text = field.value.trim();
+            if (!text) return;
+            const comment = (commentsStore[postId] || []).find(c => c.id === commentId);
+            if (!comment) return;
+            let createdReply;
+            try {
+                const callId = await submitOnchainActivity('comment-reply', `${postId}:${commentId}:${text}`);
+                const payload = await communityRequest(`/api/community/posts/${encodeURIComponent(postId)}/comments`, {
+                    method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ body: text, parentId: commentId })
+                });
+                if (!payload.comment?.id) throw new Error('Could not save your reply to the community.');
+                createdReply = payload.comment;
+                updateTransactionNotification(callId, {
+                    title: 'Reply transaction submitted',
+                    body: 'Your reply was submitted on Base. Open the post to view it.',
+                    postId,
+                    commentId
+                });
+            } catch (error) {
+                console.error('Reply transaction failed.', error);
+                showAppToast(error instanceof Error ? error.message : 'Reply transaction could not be submitted.');
+                return;
+            }
+            const actor = currentActor();
+            comment.replies = comment.replies || [];
+            comment.replies.push({ id: createdReply.id, author: actor, text, time: 'Just now', likes: 0, liked: false });
+            renderComments(postId);
+            updateCommentCountBadge(postId);
+            renderProfilePosts();
+            persistUserAppState();
+            notifyCommentRecipient(comment.author.id, {
+                title: `${actor.name} replied to your comment`, body: text, postId, commentId: comment.id, actor
+            });
+            showAppToast(`Reply submitted on Base with Builder Code ${BASE_BUILDER_CODE}.`);
+        }
+
+        // Updates a single like button in place (no full re-render), with a small pop animation.
+        function toggleCommentLike(event, postId, commentId, replyId) {
+            const comment = (commentsStore[postId] || []).find(c => c.id === commentId);
+            if (!comment) return;
+            const target = replyId ? (comment.replies || []).find(r => r.id === replyId) : comment;
+            if (!target) return;
+
+            target.liked = !target.liked;
+            target.likes += target.liked ? 1 : -1;
+
+            const btn = event.currentTarget;
+            btn.classList.toggle('liked', target.liked);
+            btn.lastChild.textContent = ' ' + target.likes;
+            if (target.liked) {
+                btn.classList.remove('pop');
+                void btn.offsetWidth;
+                btn.classList.add('pop');
+            }
+        }
+
+        function updateCommentCountBadge(postId) {
+            const el = document.getElementById(`comment-count-${postId}`);
+            if (!el) return;
+            const list = commentsStore[postId] || [];
+            const total = list.reduce((sum, c) => sum + 1 + (c.replies ? c.replies.length : 0), 0);
+            el.textContent = total;
+
+            const btn = document.getElementById(`comment-btn-${postId}`);
+            if (btn) {
+                btn.classList.remove('bump');
+                void btn.offsetWidth;
+                btn.classList.add('bump');
+            }
+        }
+
+        function toggleFollow(authorId) {
+            const nowFollowing = !followedUsers.has(authorId);
+            if (nowFollowing) followedUsers.add(authorId); else followedUsers.delete(authorId);
+            document.querySelectorAll(`.follow-btn[data-follow-author="${authorId}"]`).forEach(b => {
+                b.textContent = nowFollowing ? 'Following' : 'Follow';
+                b.classList.toggle('following', nowFollowing);
+            });
+            applyFeedFilter();
+            renderAppSocialSummary();
+            persistUserAppState();
+            createNotification({
+                title: nowFollowing ? 'Now following' : 'Unfollowed',
+                body: nowFollowing ? 'This creator was added to your Base Insiders following list.' : 'This creator was removed from your following list.'
+            });
+        }
+
+        function applyFeedFilter() {
+            const posts = document.querySelectorAll('#posts-feed-container .post-item');
+            let anyVisible = false;
+            posts.forEach(p => {
+                const authorId = p.dataset.authorId;
+                // Following is intentionally a creator-only timeline: a user's own posts
+                // stay in For You and Profile, and never appear in this filtered view.
+                const visible = currentFeedMode === 'foryou' || followedUsers.has(authorId);
+                p.style.display = visible ? '' : 'none';
+                if (visible) anyVisible = true;
+            });
+            const emptyMsg = document.getElementById('following-empty-state');
+            if (emptyMsg) {
+                const hasFollowedCreators = followedUsers.size > 0;
+                emptyMsg.textContent = hasFollowedCreators
+                    ? 'No posts from the creators you follow are available right now.'
+                    : 'Follow a creator to see only their posts here.';
+                emptyMsg.classList.toggle('hidden', !(currentFeedMode === 'following' && !anyVisible));
+            }
+        }
+
+        function sharePost(postId) {
+            if (navigator.share) {
+                navigator.share({ title: 'Base Insiders Post', text: 'Check out this post!', url: window.location.href }).catch(() => {});
+            } else {
+                navigator.clipboard.writeText(window.location.href);
+                alert("Post link copied to clipboard!");
+            }
+        }
+
+        function profileReferralUrl() {
+            const url = new URL(window.location.href);
+            url.search = '';
+            url.hash = '';
+            if (userAddress) url.searchParams.set('ref', userAddress);
+            return url.toString();
+        }
+
+        async function copyProfileReferralLink() {
+            if (!userAddress) {
+                showAppToast('Connect your wallet to create a personal invite link.');
+                return;
+            }
+            const link = profileReferralUrl();
+            try {
+                await navigator.clipboard.writeText(link);
+                showAppToast('Your invite link was copied.');
+            } catch (_) {
+                window.prompt('Copy your invite link:', link);
+            }
+        }
+
+        function drawProfileShareCard() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1200; canvas.height = 630;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('Canvas is unavailable.');
+            const name = String(document.getElementById('profile-name-title')?.textContent || 'Base Insider').slice(0, 42);
+            const handle = String(document.getElementById('profile-handle-tag')?.textContent || 'Base Insiders').slice(0, 52);
+            const rank = String(document.getElementById('profile-rank-label')?.textContent || 'Bronze').replace(/💎/g, '').trim();
+            const shortInvite = userAddress ? `${userAddress.slice(0, 8)}…${userAddress.slice(-6)}` : 'baseinsiders';
+            const background = ctx.createLinearGradient(0, 0, 1200, 630);
+            background.addColorStop(0, '#06152f'); background.addColorStop(.52, '#0a3fbe'); background.addColorStop(1, '#21104c');
+            ctx.fillStyle = background; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'rgba(151,200,255,.13)';
+            for (let x = -80; x < 1280; x += 64) for (let y = -20; y < 670; y += 64) ctx.fillRect(x, y, 1, 1);
+            const glow = ctx.createRadialGradient(965, 84, 10, 965, 84, 390);
+            glow.addColorStop(0, 'rgba(85,157,255,.72)'); glow.addColorStop(1, 'rgba(85,157,255,0)');
+            ctx.fillStyle = glow; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#fff'; ctx.font = '700 36px system-ui, sans-serif'; ctx.fillText('BASE', 72, 85);
+            ctx.fillStyle = '#9fc2ff'; ctx.font = '700 19px system-ui, sans-serif'; ctx.fillText('INSIDERS  /  ONCHAIN JOURNEY', 73, 118);
+            ctx.fillStyle = '#fff'; ctx.font = '800 64px system-ui, sans-serif'; ctx.fillText(name, 72, 230);
+            ctx.fillStyle = '#c6d7f7'; ctx.font = '500 28px system-ui, sans-serif'; ctx.fillText(handle, 74, 274);
+            ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(72, 328, 728, 1);
+            const stats = [[`${userTotalXP}`, 'XP EARNED'], [`${claimedTasksCount}`, 'QUESTS COMPLETED'], [rank.toUpperCase(), 'CURRENT RANK']];
+            stats.forEach((stat, index) => {
+                const x = 72 + index * 245;
+                ctx.fillStyle = '#fff'; ctx.font = index === 2 ? '800 28px system-ui, sans-serif' : '800 48px system-ui, sans-serif'; ctx.fillText(stat[0], x, 414);
+                ctx.fillStyle = '#9fc2ff'; ctx.font = '700 16px system-ui, sans-serif'; ctx.fillText(stat[1], x, 446);
+            });
+            ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(72, 500, 1056, 1);
+            ctx.fillStyle = '#dfeaff'; ctx.font = '600 20px system-ui, sans-serif'; ctx.fillText('Join me on Base Insiders', 72, 553);
+            ctx.fillStyle = '#84b3ff'; ctx.font = '600 18px ui-monospace, monospace'; ctx.fillText(`Invite: ${shortInvite}`, 72, 586);
+            ctx.beginPath(); ctx.arc(1035, 210, 105, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+            ctx.fillStyle = '#075bff'; ctx.font = '800 155px Georgia, serif'; ctx.textAlign = 'center'; ctx.fillText('B', 1035, 264); ctx.textAlign = 'start';
+            return canvas;
+        }
+
+        async function shareProfileCard() {
+            if (!userAddress) {
+                showAppToast('Connect your wallet before sharing a profile card.');
+                return;
+            }
+            try {
+                const canvas = drawProfileShareCard();
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                if (!blob) throw new Error('Could not create the profile card.');
+                const file = new File([blob], 'base-insiders-profile.png', { type: 'image/png' });
+                const shareData = { title: 'My Base Insiders journey', text: 'Join me on Base Insiders.', url: profileReferralUrl(), files: [file] };
+                if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+                    await navigator.share(shareData);
+                    return;
+                }
+                const download = document.createElement('a');
+                download.href = URL.createObjectURL(blob); download.download = 'base-insiders-profile.png';
+                download.click();
+                setTimeout(() => URL.revokeObjectURL(download.href), 1000);
+                showAppToast('Profile card downloaded. Your invite link is ready to share.');
+            } catch (error) {
+                if (error?.name !== 'AbortError') showAppToast('Profile card could not be shared. Please try again.');
+            }
+        }
+
+        async function checkBuilderCode() {
+            const input = document.getElementById('builder-code-hash');
+            const result = document.getElementById('builder-code-result');
+            const button = input?.closest('form')?.querySelector('button');
+            const hash = String(input?.value || '').trim();
+            if (!/^0x[a-fA-F0-9]{64}$/.test(hash)) {
+                result.textContent = 'Enter a full 0x transaction hash from Base Mainnet.';
+                result.className = 'builder-code-result error';
+                return;
+            }
+            result.textContent = 'Checking Base transaction…'; result.className = 'builder-code-result';
+            if (button) { button.disabled = true; button.textContent = 'Checking…'; }
+            try {
+                const response = await fetch(`/api/builder-code?hash=${encodeURIComponent(hash)}`, { headers: { accept: 'application/json' } });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Could not check this transaction.');
+                if (data.expectedCodeFound) {
+                    result.textContent = '✓ Verified: Builder Code bc_thovbfqm is appended to this transaction.';
+                    result.className = 'builder-code-result verified';
+                } else if (data.detected) {
+                    const codes = Array.isArray(data.builderCodes) && data.builderCodes.length ? data.builderCodes.join(', ') : 'an unsupported/undecodable ERC-8021 schema';
+                    result.textContent = `Builder attribution was found, but not bc_thovbfqm (${codes}).`;
+                    result.className = 'builder-code-result error';
+                } else {
+                    result.textContent = 'No ERC-8021 Builder Code suffix was found on this transaction.';
+                    result.className = 'builder-code-result error';
+                }
+            } catch (error) {
+                result.textContent = error instanceof Error ? error.message : 'Could not check this transaction.';
+                result.className = 'builder-code-result error';
+            } finally {
+                if (button) { button.disabled = false; button.textContent = 'Check'; }
+            }
+        }
+
+        window.addEventListener('click', function(e) {
+            if (!e.target.closest('.post-options-container, .profile-post-options')) {
+                document.querySelectorAll('.post-dropdown-menu').forEach(menu => menu.classList.remove('show'));
+            }
+        });
+
+        renderTasks();
+        updateProfileShareSummary();
+        loadCommunityPosts();
+        applyFeedFilter();
+        renderNotifications();
+        renderInsidersHub();
+    </script>
+</body>
+</html>

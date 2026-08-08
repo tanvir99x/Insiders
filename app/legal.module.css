@@ -1,0 +1,8 @@
+.page { min-height: 100vh; padding: 48px 20px; background: #0b0e14; color: #e8edf7; font-family: Arial, sans-serif; }
+.content { max-width: 760px; margin: 0 auto; }
+.eyebrow { color: #83aaff; font-size: 12px; font-weight: 800; letter-spacing: .12em; }
+.content h1 { margin: 10px 0 8px; font-size: clamp(32px, 7vw, 52px); }
+.content h2 { margin-top: 32px; font-size: 20px; }
+.content p,.content li { color: #b6c1d1; line-height: 1.65; }
+.content a { color: #8bb3ff; }
+.note { padding: 14px 16px; border: 1px solid #304664; border-radius: 12px; background: #131c29; }
