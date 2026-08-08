@@ -1340,7 +1340,11 @@
             if (!signingAccounts?.[0] || signingAccounts[0].toLowerCase() !== address.toLowerCase()) {
                 throw new Error('The active wallet account changed. Please try again.');
             }
-            const signature = await coinbaseProvider.request({ method: 'personal_sign', params: [message, address] });
+            // Coinbase Wallet's mobile provider requires personal_sign data as hex-encoded
+            // UTF-8 bytes. Verifying the original string server-side remains correct because
+            // both representations sign the same bytes.
+            const messageHex = '0x' + Array.from(new TextEncoder().encode(message), byte => byte.toString(16).padStart(2, '0')).join('');
+            const signature = await coinbaseProvider.request({ method: 'personal_sign', params: [messageHex, address] });
             const verification = await verifyLoginWithServer({ address, message, signature, nonce, chainId: BASE_CHAIN_ID });
             const session = {
                 address: address.toLowerCase(),
