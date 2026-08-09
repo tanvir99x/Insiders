@@ -234,7 +234,7 @@
     -->
     <script type="module">
         import { CoinbaseWalletSDK } from "https://esm.sh/@coinbase/wallet-sdk@4.3.7";
-        import { createAppClient, viemConnector } from "https://esm.sh/@farcaster/auth-client@0.3.0";
+        import { createAppClient, viemConnector } from "https://esm.sh/@farcaster/auth-client@0.7.1";
 
         window.CoinbaseWalletSDK = CoinbaseWalletSDK;
         window.__fcAppClient = createAppClient({
@@ -1754,10 +1754,12 @@
                 const domain = window.location.hostname || "app.local";
                 const siweUri = window.location.origin || window.location.href;
 
-                const { data: channel } = await appClient.createChannel({
+                const channelResult = await appClient.createChannel({
                     siweUri: siweUri,
                     domain: domain
                 });
+                if (channelResult?.isError) throw channelResult.error || new Error('The Farcaster relay rejected the sign-in request.');
+                const channel = channelResult?.data;
                 if (!channel?.url || !channel?.channelToken) {
                     throw new Error('The Farcaster relay did not return a sign-in channel.');
                 }
