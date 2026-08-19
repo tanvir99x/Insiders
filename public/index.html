@@ -1804,13 +1804,26 @@
                 fcPollAbort = { cancelled: false };
                 const thisPoll = fcPollAbort;
 
+                let completed = false;
+                const completeFarcasterSignIn = async (data) => {
+                    if (completed || thisPoll.cancelled) return;
+                    if (!data?.fid) {
+                        statusEl.textContent = 'Farcaster approved the request but did not return a profile. Please try again.';
+                        return;
+                    }
+                    completed = true;
+                    await handleFarcasterAuthSuccess(data);
+                };
+
                 const status = await appClient.watchStatus({
                     channelToken: channel.channelToken,
                     timeout: 120000,
                     interval: 1500,
                     onResponse: ({ data }) => {
                         if (thisPoll.cancelled) return;
-                        if (data && data.state === 'pending') {
+                        if (data && (data.state === 'completed' || data.state === 'complete')) {
+                            completeFarcasterSignIn(data);
+                        } else if (data && data.state === 'pending') {
                             statusEl.textContent = "Waiting for approval in Warpcast…";
                         }
                     }
@@ -1818,9 +1831,9 @@
 
                 if (thisPoll.cancelled) return;
 
-                if (status && status.data && status.data.state === 'completed') {
-                    handleFarcasterAuthSuccess(status.data);
-                } else {
+                if (status && status.data && (status.data.state === 'completed' || status.data.state === 'complete')) {
+                    await completeFarcasterSignIn(status.data);
+                } else if (!completed) {
                     statusEl.textContent = "Sign-in timed out. Please try again.";
                 }
             } catch (err) {
