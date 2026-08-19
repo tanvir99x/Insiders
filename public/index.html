@@ -226,23 +226,16 @@
 
     <!-- Ethers.js -->
     <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
-    <!--
-      Coinbase Wallet SDK v4 + Farcaster Auth Client are ESM-only packages (no UMD/browser
-      global build exists for either). Loading them as plain <script src="..."> tags never
-      defines a window global, which is why "Base Smart Wallet SDK failed to load" happened —
-      window.CoinbaseWalletSDK was always undefined. They must be loaded as real ES modules.
-    -->
+    <!-- Base Account exposes the supported browser provider for both desktop and the Base App. -->
+    <script src="https://unpkg.com/@base-org/account/dist/base-account.min.js"></script>
     <script type="module">
-        import { CoinbaseWalletSDK } from "https://esm.sh/@coinbase/wallet-sdk@4.3.7";
         import { createAppClient, viemConnector } from "https://esm.sh/@farcaster/auth-client@0.7.1";
 
-        window.CoinbaseWalletSDK = CoinbaseWalletSDK;
         window.__fcAppClient = createAppClient({
             relay: "https://relay.farcaster.xyz",
             ethereum: viemConnector()
         });
 
-        window.dispatchEvent(new Event('cbw-sdk-ready'));
         window.dispatchEvent(new Event('fc-client-ready'));
     </script>
 </head>
@@ -1449,45 +1442,40 @@
         ];
         const tasksData = Array.isArray(window.BASE_INSIDERS_TASKS) ? window.BASE_INSIDERS_TASKS : defaultTasksData;
 
-        function getCoinbaseWalletSDKClass() {
-            return window.CoinbaseWalletSDK || null;
+        function getBaseAccountSDKFactory() {
+            return window.createBaseAccountSDK || null;
         }
 
-        // Waits for the module-script import (see <head>) to finish, instead of assuming the
-        // global is already there the instant this runs.
-        async function waitForCoinbaseWalletSDKClass() {
-            let SDKClass = getCoinbaseWalletSDKClass();
-            if (SDKClass) return SDKClass;
+        // The Base Account script is loaded before this app script. Keep a short wait so a slow
+        // mobile webview still gets a useful error instead of trying to use a missing provider.
+        async function waitForBaseAccountSDKFactory() {
+            let createBaseAccountSDK = getBaseAccountSDKFactory();
+            if (createBaseAccountSDK) return createBaseAccountSDK;
             return await new Promise((resolve) => {
-                const t = setTimeout(() => resolve(getCoinbaseWalletSDKClass()), 5000);
-                window.addEventListener('cbw-sdk-ready', () => {
-                    clearTimeout(t);
-                    resolve(getCoinbaseWalletSDKClass());
-                }, { once: true });
+                const startedAt = Date.now();
+                const check = () => {
+                    createBaseAccountSDK = getBaseAccountSDKFactory();
+                    if (createBaseAccountSDK || Date.now() - startedAt >= 5000) return resolve(createBaseAccountSDK);
+                    setTimeout(check, 50);
+                };
+                check();
             });
         }
 
         async function initWalletSDK() {
             try {
-                const SDKClass = await waitForCoinbaseWalletSDKClass();
-                if (SDKClass) {
-                    // v4 SDK: appChainIds goes in the constructor, not makeWeb3Provider(). darkMode
-                    // is not a v4 constructor option (it's ignored/invalid), so it's dropped here.
-                    walletSdk = new SDKClass({
+                const createBaseAccountSDK = await waitForBaseAccountSDKFactory();
+                if (createBaseAccountSDK) {
+                    walletSdk = createBaseAccountSDK({
                         appName: "Base Insiders",
                         appLogoUrl: window.location.origin + "/insiders-logo.png",
                         appChainIds: [8453] // Base Mainnet
                     });
-                    // v4 SDK: makeWeb3Provider() takes a Preference object, not (rpcUrl, chainId).
-                    // "smartWalletOnly" is what forces the passkey / Smart Wallet popup instead of
-                    // the SDK silently deciding what kind of wallet to show.
                     providerListenersAttached = false;
-                    coinbaseProvider = walletSdk.makeWeb3Provider({
-                        options: "smartWalletOnly"
-                    });
+                    coinbaseProvider = walletSdk.getProvider();
                     attachProviderListeners();
                 } else {
-                    console.error("CoinbaseWalletSDK module never loaded.");
+                    console.error("Base Account SDK did not load.");
                 }
             } catch (err) {
                 console.error("SDK Init Error:", err);
