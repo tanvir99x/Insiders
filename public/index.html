@@ -920,8 +920,8 @@
             }).join('') : '<p class="insiders-empty">No Insiders updates yet.</p>';
         }
 
-        // Every onchain action is user-initiated. No call is created if the wallet cannot
-        // guarantee ERC-8021 Builder Code attribution.
+        // Every onchain action is user-initiated. Base App automatically attributes calls
+        // from registered apps; other compatible wallets can append this Builder Code too.
         const INSIDERS_TIP_RECIPIENT = '0x0808c05c50dce70b136f808bcecadfc09a7369b7';
         const BASE_BUILDER_CODE = 'bc_thovbfqm';
         const BASE_MAINNET_CHAIN_ID = '0x2105';
@@ -965,17 +965,17 @@
             if (!from) throw new Error('No wallet account was returned.');
             await ensureBaseNetwork();
 
-            const walletCapabilities = await coinbaseProvider.request({ method: 'wallet_getCapabilities', params: [from] });
-            if (walletCapabilities?.[BASE_MAINNET_CHAIN_ID]?.dataSuffix?.supported !== true) {
-                throw new Error('This wallet does not support required Builder Code attribution. No transaction was sent.');
-            }
-
             const callId = await coinbaseProvider.request({
                 method: 'wallet_sendCalls',
                 params: [{
-                    version: '1.0', chainId: BASE_MAINNET_CHAIN_ID, from,
+                    // Base Account's current Wallet Call API requires version 2.0.0 and an
+                    // explicit atomicity preference. A single activity call needs no atomic
+                    // guarantee, so it also works in wallets without batching support.
+                    version: '2.0.0', chainId: BASE_MAINNET_CHAIN_ID, from, atomicRequired: false,
                     calls: [{ to, value, data }],
-                    capabilities: { dataSuffix: { value: builderCodeDataSuffix(BASE_BUILDER_CODE), optional: false } }
+                    // Attribution must never prevent a user from publishing. Base App adds
+                    // the registered app's code itself; other wallets may support this suffix.
+                    capabilities: { dataSuffix: { value: builderCodeDataSuffix(BASE_BUILDER_CODE), optional: true } }
                 }]
             });
             console.info(`${label || 'Base Insiders action'} submitted with Base Builder Code attribution.`, callId);
@@ -2419,7 +2419,15 @@
         }
 
         async function communityRequest(path, init) {
-            const response = await fetch(path, init);
+            // Base App's embedded browser can omit HttpOnly cookies on a follow-up request.
+            // Reuse the signed token obtained during SIWE login so publishing the post does
+            // not fail after the user has already approved the onchain action.
+            const headers = new Headers(init?.headers || {});
+            const session = getStoredSession();
+            if (session?.sessionToken && !headers.has('Authorization')) {
+                headers.set('Authorization', `Bearer ${session.sessionToken}`);
+            }
+            const response = await fetch(path, { ...init, headers });
             const contentType = response.headers.get('content-type') || '';
             if (!contentType.includes('application/json')) {
                 throw new Error('Community API returned a web page instead of data. Deploy this project as a Next.js app on Vercel, then open the Vercel URL—not public/index.html directly.');
