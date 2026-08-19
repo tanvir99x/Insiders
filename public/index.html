@@ -1272,6 +1272,17 @@
             } catch (_) { /* Local storage remains available if the server is temporarily unavailable. */ }
         }
 
+        // The Base App identifies a signed-in user by wallet address, not by a Farcaster
+        // context/FID. Resolve the public Farcaster profile from that wallet so a profile
+        // linked on desktop also has a path to appear in a fresh Base App webview.
+        async function findFarcasterProfileForWallet(address) {
+            if (!/^0x[a-f0-9]{40}$/i.test(address || '')) return null;
+            try {
+                const data = await fetchFarcasterSocial('profile-by-address', { address });
+                return data?.user?.fid ? data.user : null;
+            } catch (_) { return null; }
+        }
+
         function removeFarcasterProfileFromServer() {
             fetch('/api/farcaster/connection', { method: 'DELETE', credentials: 'include', headers: sessionAuthHeaders() }).catch(() => {});
         }
@@ -2044,7 +2055,11 @@
             // A Farcaster connection belongs to the wallet, not a single browser. Prefer the
             // server copy so the same wallet restores its verified profile on mobile and PC.
             const serverFarcasterProfile = await loadSavedFarcasterProfileFromServer();
-            const savedFarcasterProfile = serverFarcasterProfile || getSavedFarcasterProfile(address);
+            const localFarcasterProfile = getSavedFarcasterProfile(address);
+            const walletFarcasterProfile = serverFarcasterProfile || localFarcasterProfile
+                ? null
+                : await findFarcasterProfileForWallet(address);
+            const savedFarcasterProfile = serverFarcasterProfile || localFarcasterProfile || walletFarcasterProfile;
             if (savedFarcasterProfile) {
                 farcasterProfile = savedFarcasterProfile;
                 applyFarcasterProfile(farcasterProfile);
