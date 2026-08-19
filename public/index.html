@@ -1329,10 +1329,10 @@
             return { mode: 'server' };
         }
 
-        async function getLoginNonce(address) {
+        async function getLoginNonce() {
             const baseUrl = window.BASE_INSIDERS_CONFIG && window.BASE_INSIDERS_CONFIG.authApiUrl;
             if (!baseUrl) return makeNonce();
-            const response = await fetch(baseUrl.replace(/\/$/, '') + '/auth/nonce?address=' + encodeURIComponent(address), {
+            const response = await fetch(baseUrl.replace(/\/$/, '') + '/auth/nonce', {
                 credentials: 'include'
             });
             if (!response.ok) {
@@ -1351,8 +1351,9 @@
                 message.includes('not supported') || message.includes('method not found');
         }
 
-        async function signInWallet(address) {
-            const nonce = await getLoginNonce(address);
+        async function signInWallet() {
+            const nonce = await getLoginNonce();
+            let address;
             let message;
             let signature;
 
@@ -1375,9 +1376,7 @@
                 if (!account?.address || !signIn?.message || !signIn?.signature) {
                     throw new Error('The wallet did not return a sign-in signature.');
                 }
-                if (account.address.toLowerCase() !== address.toLowerCase()) {
-                    throw new Error('The active wallet account changed. Please try again.');
-                }
+                address = account.address;
                 message = signIn.message;
                 signature = signIn.signature;
             } catch (error) {
@@ -1385,6 +1384,9 @@
                 // versions that have not implemented wallet_connect yet. Do not retry a user
                 // rejection or a genuine mobile-wallet error with another prompt.
                 if (!walletConnectIsUnsupported(error)) throw error;
+                const accounts = await coinbaseProvider.request({ method: 'eth_requestAccounts' });
+                address = accounts?.[0];
+                if (!address) throw new Error('No wallet account was returned. Please try again.');
                 message = makeLoginMessage(address, nonce);
                 setLoginStatus('Confirm the secure login message in your wallet…');
                 const messageHex = '0x' + Array.from(new TextEncoder().encode(message), byte => byte.toString(16).padStart(2, '0')).join('');
@@ -1400,6 +1402,7 @@
                 persistent: verification.mode === 'local'
             };
             localStorage.setItem(LOGIN_SESSION_KEY, JSON.stringify(session));
+            return address;
         }
 
         function attachProviderListeners() {
@@ -1543,19 +1546,9 @@
                 // Wallet" could log a user in via a different wallet without ever showing the
                 // passkey / Smart Wallet authentication prompt.
                 setLoginStatus('Connecting to Base Smart Wallet…');
-                const accounts = await coinbaseProvider.request({ method: 'eth_requestAccounts' });
-
-                if (accounts && accounts.length > 0) {
-                    // Signing an authentication message is network-independent. Some Coinbase
-                    // Smart Wallet providers reject another RPC while their account-access
-                    // handshake is still settling, so do not query/switch the chain before
-                    // personal_sign. Transaction paths enforce Base separately.
-                    await signInWallet(accounts[0]);
-                    handleSuccessfulConnection(accounts[0]);
-                    setLoginStatus('Signed in successfully.');
-                } else {
-                    alert("No wallet account was returned. Please try again.");
-                }
+                const address = await signInWallet();
+                await handleSuccessfulConnection(address);
+                setLoginStatus('Signed in successfully.');
             } catch (error) {
                 console.error("Connection error:", error);
                 if (error && error.code === 4001) {

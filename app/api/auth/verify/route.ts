@@ -5,6 +5,7 @@ import { setSession } from '@/lib/session';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
+const LOGIN_NONCE_COOKIE = 'base_insiders_login_nonce';
 
 type Body = { address?: unknown; message?: unknown; signature?: unknown; nonce?: unknown; chainId?: unknown };
 const baseClient = createPublicClient({ chain: base, transport: http('https://mainnet.base.org', { timeout: 15_000 }) });
@@ -19,15 +20,21 @@ export async function POST(request: NextRequest) {
   const nonce = String(body.nonce || '');
   if (!/^0x[a-f0-9]{40}$/.test(address) || !nonce || message.length > 2000 || !message.includes(`Nonce: ${nonce}`) || !message.includes(`Chain ID: 8453`)) return NextResponse.json({ error: 'Invalid login request.' }, { status: 400 });
   try {
-    const nonces = await supabase<Array<{ id: string }>>(`auth_nonces?address=eq.${address}&nonce=eq.${encodeURIComponent(nonce)}&expires_at=gt.${encodeURIComponent(new Date().toISOString())}&used_at=is.null&select=id&limit=1`);
-    if (!nonces[0]) return NextResponse.json({ error: 'This login request has expired. Please try again.' }, { status: 401 });
+    const cookieNonce = request.cookies.get(LOGIN_NONCE_COOKIE)?.value;
+    let nonceId: string | null = null;
+    if (cookieNonce !== nonce) {
+      const nonces = await supabase<Array<{ id: string }>>(`auth_nonces?address=eq.${address}&nonce=eq.${encodeURIComponent(nonce)}&expires_at=gt.${encodeURIComponent(new Date().toISOString())}&used_at=is.null&select=id&limit=1`);
+      if (!nonces[0]) return NextResponse.json({ error: 'This login request has expired. Please try again.' }, { status: 401 });
+      nonceId = nonces[0].id;
+    }
     // Coinbase Smart Wallet is a contract account. PublicClient.verifyMessage
     // verifies both regular EOA signatures and ERC-1271 contract signatures.
     const valid = await baseClient.verifyMessage({ address: address as `0x${string}`, message, signature: signature as `0x${string}` });
     if (!valid) return NextResponse.json({ error: 'Wallet signature could not be verified.' }, { status: 401 });
-    await supabase(`auth_nonces?id=eq.${nonces[0].id}`, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ used_at: new Date().toISOString() }) });
+    if (nonceId) await supabase(`auth_nonces?id=eq.${nonceId}`, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ used_at: new Date().toISOString() }) });
     await supabase('profiles?on_conflict=wallet_address', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ wallet_address: address }) });
     const response = NextResponse.json({ authenticated: true, address });
+    response.cookies.set(LOGIN_NONCE_COOKIE, '', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 0 });
     setSession(response, address);
     return response;
   } catch (error) {
