@@ -1351,6 +1351,18 @@
                 message.includes('not supported') || message.includes('method not found');
         }
 
+        function loginErrorMessage(error) {
+            const code = Number(error?.code);
+            if (code === 4001) return 'Wallet approval was cancelled.';
+            if (code === 4100 || code === 4200) return 'Base Account is not available in this app session. Refresh the app and try again.';
+            if (code === -32601) return 'This wallet does not support the required sign-in method.';
+            const message = String(error?.message || '').replace(/[\r\n]+/g, ' ').trim();
+            if (/failed to fetch|networkerror|load failed/i.test(message)) return 'Could not reach the secure login server. Check your connection and try again.';
+            // API errors are deliberately short, user-safe strings (for example, an expired
+            // login request). Showing them here matters because Base App may suppress alert().
+            return message ? `Login failed: ${message.slice(0, 160)}` : 'Login was not completed. Please try again.';
+        }
+
         async function signInWallet() {
             const nonce = await getLoginNonce();
             let address;
@@ -1552,10 +1564,10 @@
             } catch (error) {
                 console.error("Connection error:", error);
                 if (error && error.code === 4001) {
-                    // user closed/rejected the passkey prompt - no need for a scary alert
+                    setLoginStatus(loginErrorMessage(error), true);
                     return;
                 }
-                setLoginStatus('Login was not completed. Please try again.', true);
+                setLoginStatus(loginErrorMessage(error), true);
                 alert("Wallet login failed: " + (error && error.message ? error.message : "Unknown error"));
             } finally {
                 loginInFlight = false;
