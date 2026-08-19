@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createPublicClient, http } from 'viem';
 import { base } from 'viem/chains';
-import { setSession } from '@/lib/session';
+import { createSessionToken, setSession } from '@/lib/session';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
@@ -44,7 +44,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'This login request could not be completed. Please try again.' }, { status: 503 });
     }
 
-    const response = NextResponse.json({ authenticated: true, address });
+    const sessionToken = createSessionToken(address);
+    const response = NextResponse.json({ authenticated: true, address, sessionToken });
     try {
       setSession(response, address);
     } catch (error) {

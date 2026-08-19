@@ -1245,9 +1245,17 @@
             return getSavedFarcasterProfiles()[address.toLowerCase()] || null;
         }
 
+        // Base App may not return an embedded webview's HttpOnly cookie to the app origin.
+        // A short-lived, server-signed token returned after SIWE verification keeps the same
+        // authenticated session available for the wallet's saved Farcaster connection.
+        function sessionAuthHeaders(headers = {}) {
+            const session = getStoredSession();
+            return session?.sessionToken ? { ...headers, Authorization: `Bearer ${session.sessionToken}` } : headers;
+        }
+
         async function loadSavedFarcasterProfileFromServer() {
             try {
-                const response = await fetch('/api/farcaster/connection', { credentials: 'include', cache: 'no-store' });
+                const response = await fetch('/api/farcaster/connection', { credentials: 'include', cache: 'no-store', headers: sessionAuthHeaders() });
                 if (!response.ok) return null;
                 const payload = await response.json();
                 return payload?.profile?.fid ? payload.profile : null;
@@ -1258,14 +1266,14 @@
             if (!profile?.fid) return;
             try {
                 await fetch('/api/farcaster/connection', {
-                    method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+                    method: 'PATCH', credentials: 'include', headers: sessionAuthHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({ fid: profile.fid, username: profile.username, displayName: profile.displayName || profile.display_name, pfpUrl: profile.pfpUrl || profile.pfp_url })
                 });
             } catch (_) { /* Local storage remains available if the server is temporarily unavailable. */ }
         }
 
         function removeFarcasterProfileFromServer() {
-            fetch('/api/farcaster/connection', { method: 'DELETE', credentials: 'include' }).catch(() => {});
+            fetch('/api/farcaster/connection', { method: 'DELETE', credentials: 'include', headers: sessionAuthHeaders() }).catch(() => {});
         }
 
         function setFarcasterConnectControl(isConnected) {
@@ -1326,7 +1334,8 @@
                 const result = await response.json().catch(() => null);
                 throw new Error(typeof result?.error === 'string' ? result.error : 'Your login could not be verified by the server.');
             }
-            return { mode: 'server' };
+            const result = await response.json().catch(() => null);
+            return { mode: 'server', sessionToken: typeof result?.sessionToken === 'string' ? result.sessionToken : '' };
         }
 
         async function getLoginNonce() {
@@ -1411,6 +1420,7 @@
                 issuedAt: Date.now(),
                 expiresAt: Date.now() + LOGIN_TTL_MS,
                 mode: verification.mode,
+                sessionToken: verification.sessionToken || '',
                 persistent: verification.mode === 'local'
             };
             localStorage.setItem(LOGIN_SESSION_KEY, JSON.stringify(session));

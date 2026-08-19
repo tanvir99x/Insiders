@@ -21,9 +21,15 @@ function encode(session: Session) {
   return `${value}.${signature(value)}`;
 }
 
+export function createSessionToken(address: string) {
+  return encode({ address: address.toLowerCase(), exp: Date.now() + MAX_AGE_SECONDS * 1000 });
+}
+
 export function readSession(request: NextRequest): Session | null {
   try {
-    const raw = request.cookies.get(COOKIE)?.value;
+    const authorization = request.headers.get('authorization');
+    const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    const raw = request.cookies.get(COOKIE)?.value || bearer;
     if (!raw) return null;
     const [value, received] = raw.split('.');
     if (!value || !received) return null;
@@ -36,7 +42,7 @@ export function readSession(request: NextRequest): Session | null {
 }
 
 export function setSession(response: NextResponse, address: string) {
-  response.cookies.set(COOKIE, encode({ address: address.toLowerCase(), exp: Date.now() + MAX_AGE_SECONDS * 1000 }), {
+  response.cookies.set(COOKIE, createSessionToken(address), {
     httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: MAX_AGE_SECONDS,
   });
 }
