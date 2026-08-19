@@ -51,9 +51,11 @@ export async function PATCH(request: NextRequest) {
     if (!Number.isSafeInteger(fid) || fid < 1 || fid > 999_999_999_999 || username.length > 80 || displayName.length > 120 || (pfpUrl && !/^https:\/\//i.test(pfpUrl))) {
       return NextResponse.json({ error: 'Invalid Farcaster profile.' }, { status: 400 });
     }
-    await supabase(`profiles?wallet_address=eq.${session.address}`, {
-      method: 'PATCH', headers: { Prefer: 'return=minimal' },
-      body: JSON.stringify({ farcaster_fid: fid, handle: username || null, display_name: displayName || username || null, avatar_url: pfpUrl || null }),
+    // A user may authenticate successfully while profile sync is temporarily unavailable.
+    // Upsert here so connecting Farcaster always creates the wallet's shared profile record.
+    await supabase('profiles?on_conflict=wallet_address', {
+      method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ wallet_address: session.address, farcaster_fid: fid, handle: username || null, display_name: displayName || username || null, avatar_url: pfpUrl || null }),
     });
     return NextResponse.json({ connected: true });
   } catch (error) {

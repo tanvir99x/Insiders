@@ -2030,10 +2030,14 @@
             renderReports();
             // A Farcaster connection belongs to the wallet, not a single browser. Prefer the
             // server copy so the same wallet restores its verified profile on mobile and PC.
-            const savedFarcasterProfile = await loadSavedFarcasterProfileFromServer() || getSavedFarcasterProfile(address);
+            const serverFarcasterProfile = await loadSavedFarcasterProfileFromServer();
+            const savedFarcasterProfile = serverFarcasterProfile || getSavedFarcasterProfile(address);
             if (savedFarcasterProfile) {
                 farcasterProfile = savedFarcasterProfile;
                 applyFarcasterProfile(farcasterProfile);
+                // Migrate a profile that was saved by an earlier browser-only session so it
+                // becomes available to this wallet in the Base App as well.
+                if (!serverFarcasterProfile) saveFarcasterProfileToServer(farcasterProfile);
                 syncFarcasterSocialProfile(farcasterProfile);
             } else {
                 setFarcasterConnectControl(false);
