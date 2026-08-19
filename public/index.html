@@ -1351,23 +1351,53 @@
             return payload.nonce;
         }
 
+        function walletConnectIsUnsupported(error) {
+            const code = error && Number(error.code);
+            const message = String(error?.message || '').toLowerCase();
+            return code === 4100 || code === 4200 || code === -32601 ||
+                message.includes('not supported') || message.includes('method not found');
+        }
+
         async function signInWallet(address) {
             const nonce = await getLoginNonce(address);
-            const message = makeLoginMessage(address, nonce);
-            setLoginStatus('Confirm the secure login message in your wallet…');
-            // The mobile Coinbase/Base browser can complete the initial account picker but
-            // lose the provider's authorisation state while the nonce request is in flight.
-            // Re-requesting accounts immediately before personal_sign is idempotent on
-            // desktop and completes that handshake on mobile.
-            const signingAccounts = await coinbaseProvider.request({ method: 'eth_requestAccounts' });
-            if (!signingAccounts?.[0] || signingAccounts[0].toLowerCase() !== address.toLowerCase()) {
-                throw new Error('The active wallet account changed. Please try again.');
+            let message;
+            let signature;
+
+            // Base Account's SIWE capability bundles connection and signing in a single wallet
+            // request. This is important in the Base mobile app, where a separate
+            // eth_requestAccounts -> personal_sign sequence can lose its pending authorisation.
+            setLoginStatus('Confirm the secure login in Base…');
+            try {
+                const result = await coinbaseProvider.request({
+                    method: 'wallet_connect',
+                    params: [{
+                        version: '1',
+                        capabilities: {
+                            signInWithEthereum: { nonce, chainId: BASE_CHAIN_HEX }
+                        }
+                    }]
+                });
+                const account = result?.accounts?.[0];
+                const signIn = account?.capabilities?.signInWithEthereum;
+                if (!account?.address || !signIn?.message || !signIn?.signature) {
+                    throw new Error('The wallet did not return a sign-in signature.');
+                }
+                if (account.address.toLowerCase() !== address.toLowerCase()) {
+                    throw new Error('The active wallet account changed. Please try again.');
+                }
+                message = signIn.message;
+                signature = signIn.signature;
+            } catch (error) {
+                // Keep ordinary EIP-1193 signing as a compatibility path for wallets or SDK
+                // versions that have not implemented wallet_connect yet. Do not retry a user
+                // rejection or a genuine mobile-wallet error with another prompt.
+                if (!walletConnectIsUnsupported(error)) throw error;
+                message = makeLoginMessage(address, nonce);
+                setLoginStatus('Confirm the secure login message in your wallet…');
+                const messageHex = '0x' + Array.from(new TextEncoder().encode(message), byte => byte.toString(16).padStart(2, '0')).join('');
+                signature = await coinbaseProvider.request({ method: 'personal_sign', params: [messageHex, address] });
             }
-            // Coinbase Wallet's mobile provider requires personal_sign data as hex-encoded
-            // UTF-8 bytes. Verifying the original string server-side remains correct because
-            // both representations sign the same bytes.
-            const messageHex = '0x' + Array.from(new TextEncoder().encode(message), byte => byte.toString(16).padStart(2, '0')).join('');
-            const signature = await coinbaseProvider.request({ method: 'personal_sign', params: [messageHex, address] });
+
             const verification = await verifyLoginWithServer({ address, message, signature, nonce, chainId: BASE_CHAIN_ID });
             const session = {
                 address: address.toLowerCase(),
