@@ -27,16 +27,27 @@ export async function POST(request: NextRequest) {
       if (!nonces[0]) return NextResponse.json({ error: 'This login request has expired. Please try again.' }, { status: 401 });
       nonceId = nonces[0].id;
     }
-    // Coinbase Smart Wallet is a contract account. PublicClient.verifyMessage
-    // verifies both regular EOA signatures and ERC-1271 contract signatures.
-    const valid = await baseClient.verifyMessage({ address: address as `0x${string}`, message, signature: signature as `0x${string}` });
+    // Base Smart Wallet is a contract account. PublicClient.verifyMessage verifies
+    // both regular EOA signatures and ERC-1271/ERC-6492 smart-account signatures.
+    let valid: boolean;
+    try {
+      valid = await baseClient.verifyMessage({ address: address as `0x${string}`, message, signature: signature as `0x${string}` });
+    } catch (error) {
+      console.error('Wallet signature verification service failed.', error instanceof Error ? error.message : error);
+      return NextResponse.json({ error: 'Wallet signature verification is temporarily unavailable.' }, { status: 503 });
+    }
     if (!valid) return NextResponse.json({ error: 'Wallet signature could not be verified.' }, { status: 401 });
-    if (nonceId) await supabase(`auth_nonces?id=eq.${nonceId}`, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ used_at: new Date().toISOString() }) });
-    await supabase('profiles?on_conflict=wallet_address', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ wallet_address: address }) });
-    const response = NextResponse.json({ authenticated: true, address });
-    response.cookies.set(LOGIN_NONCE_COOKIE, '', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 0 });
-    setSession(response, address);
-    return response;
+    try {
+      if (nonceId) await supabase(`auth_nonces?id=eq.${nonceId}`, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ used_at: new Date().toISOString() }) });
+      await supabase('profiles?on_conflict=wallet_address', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ wallet_address: address }) });
+      const response = NextResponse.json({ authenticated: true, address });
+      response.cookies.set(LOGIN_NONCE_COOKIE, '', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 0 });
+      setSession(response, address);
+      return response;
+    } catch (error) {
+      console.error('Could not create wallet login session.', error instanceof Error ? error.message : error);
+      return NextResponse.json({ error: 'The secure login session could not be created.' }, { status: 503 });
+    }
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'Unknown error';
     console.error('Could not verify wallet login.', detail);
