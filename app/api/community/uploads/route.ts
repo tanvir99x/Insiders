@@ -21,7 +21,12 @@ function storageHeaders(key: string, extra: HeadersInit = {}) {
 async function ensureBucket(url: string, key: string) {
   const bucket = await fetch(`${url}/storage/v1/bucket/${BUCKET}`, { headers: storageHeaders(key) });
   if (bucket.ok) return;
-  if (bucket.status !== 404) throw new Error(`Could not check storage bucket (${bucket.status}).`);
+  // Supabase Storage currently represents a missing bucket as HTTP 400 with a
+  // `NoSuchBucket` body, rather than a literal HTTP 404.
+  const detail = await bucket.text();
+  if (bucket.status !== 404 && !/bucket not found|nosuchbucket/i.test(detail)) {
+    throw new Error(`Could not check storage bucket (${bucket.status}).`);
+  }
   const created = await fetch(`${url}/storage/v1/bucket`, {
     method: 'POST',
     headers: storageHeaders(key, { 'content-type': 'application/json' }),
