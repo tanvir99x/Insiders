@@ -9,7 +9,9 @@ const NONCE_MAX_AGE_SECONDS = 10 * 60;
 export async function GET(request: NextRequest) {
   const address = request.nextUrl.searchParams.get('address')?.toLowerCase() || '';
   if (!isSupabaseConfigured()) return NextResponse.json({ error: 'Wallet authentication is not configured.' }, { status: 503 });
-  const nonce = randomBytes(24).toString('base64url');
+  // EIP-4361 / Base Account accepts an alphanumeric nonce. Base64URL can include
+  // "-" and "_", which Base rejects as an invalid SIWE capability parameter.
+  const nonce = randomBytes(24).toString('hex');
 
   // Base App authentication obtains the wallet address inside wallet_connect. Bind the
   // one-time nonce to this browser first, so login can stay a single wallet interaction.
