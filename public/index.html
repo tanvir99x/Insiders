@@ -526,7 +526,7 @@
     <!-- JavaScript Logic -->
     <script>
         let userAddress = null;
-        let attachedImageBase64 = null;
+        let attachedImageFile = null;
         let userProfileAvatar = "";
         let userTotalXP = 0;
         let claimedTasksCount = 0;
@@ -2075,7 +2075,7 @@
 
         function disconnectWallet() {
             document.documentElement.classList.remove('restoring-session');
-            userAddress = null; attachedImageBase64 = null; userTotalXP = 0; claimedTasksCount = 0; userPosts = [];
+            userAddress = null; attachedImageFile = null; userTotalXP = 0; claimedTasksCount = 0; userPosts = [];
             farcasterProfile = null;
             followedUsers = new Set(); claimedTaskIds = new Set();
             notifications = [];
@@ -2337,12 +2337,8 @@
         function previewFile() {
             const fileInput = document.getElementById('post-file-input');
             if (fileInput.files && fileInput.files[0]) {
-                const reader = new FileReader();
-                reader.onload = e => { 
-                    attachedImageBase64 = e.target.result; 
-                    document.getElementById('file-name-display').textContent = "File attached successfully ✓";
-                };
-                reader.readAsDataURL(fileInput.files[0]);
+                attachedImageFile = fileInput.files[0];
+                document.getElementById('file-name-display').textContent = `${attachedImageFile.name} attached ✓`;
             }
         }
 
@@ -2474,8 +2470,7 @@
 
         async function createNewPost() {
             const textVal = document.getElementById('post-text-input').value.trim();
-            if (!textVal && !attachedImageBase64) return alert("Write something or attach file!");
-            if (attachedImageBase64) return showAppToast('Image posts need hosted storage before they can be published to the community. Please publish text only for now.');
+            if (!textVal && !attachedImageFile) return alert("Write something or attach file!");
             if (!userAddress || !getStoredSession()) {
                 alert('Your login session has expired. Please sign in again.');
                 disconnectWallet();
@@ -2488,9 +2483,17 @@
             let callId = '';
             let createdPost;
             try {
+                let imageUrl = '';
+                if (attachedImageFile) {
+                    const form = new FormData();
+                    form.append('image', attachedImageFile);
+                    const upload = await communityRequest('/api/community/uploads', { method: 'POST', body: form });
+                    imageUrl = upload.imageUrl || '';
+                    if (!imageUrl) throw new Error('Could not upload your image.');
+                }
                 callId = await submitOnchainActivity('post', `${draftPostId}:${textVal}`);
                 const payload = await communityRequest('/api/community/posts', {
-                    method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ body: textVal })
+                    method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ body: textVal, imageUrl })
                 });
                 if (!payload.post?.id) throw new Error('Could not save your post to the community.');
                 createdPost = payload.post;
@@ -2509,16 +2512,17 @@
 
             const author = currentActor();
 
-            const postHTML = buildPostHTML(createdPost.id, author, textVal, null, "Just now", true);
+            const postHTML = buildPostHTML(createdPost.id, author, textVal, createdPost.image_url, "Just now", true);
             document.getElementById('posts-feed-container').insertAdjacentHTML('afterbegin', postHTML);
             commentsStore[createdPost.id] = [];
             loadedCommentPostIds.add(createdPost.id);
-            userPosts.unshift({ id: createdPost.id, text: textVal, image: null, time: 'Just now' });
+            userPosts.unshift({ id: createdPost.id, text: textVal, image: createdPost.image_url, time: 'Just now' });
             renderProfilePosts();
             persistUserAppState();
 
             document.getElementById('post-text-input').value = '';
-            attachedImageBase64 = null;
+            attachedImageFile = null;
+            document.getElementById('post-file-input').value = '';
             document.getElementById('file-name-display').textContent = '';
             applyFeedFilter();
             showAppToast(`Post submitted on Base with Builder Code ${BASE_BUILDER_CODE}.`);

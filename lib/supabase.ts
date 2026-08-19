@@ -1,6 +1,6 @@
 type Json = Record<string, unknown> | unknown[];
 
-function config() {
+export function supabaseConfig() {
   const url = process.env.SUPABASE_URL?.replace(/\/$/, '');
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error('Supabase is not configured.');
@@ -9,7 +9,7 @@ function config() {
 
 /** Minimal server-only PostgREST client. The service-role key never reaches the browser. */
 export async function supabase<T = Json>(path: string, init: RequestInit = {}): Promise<T> {
-  const { url, key } = config();
+  const { url, key } = supabaseConfig();
   const response = await fetch(`${url}/rest/v1/${path}`, {
     ...init,
     headers: {
