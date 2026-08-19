@@ -9,7 +9,9 @@ type PostRow = { id: string; author_address: string; body: string; image_url: st
 export async function GET() {
   if (!isSupabaseConfigured()) return NextResponse.json({ error: 'Community database is not configured.' }, { status: 503 });
   try {
-    const posts = await supabase<PostRow[]>('posts?is_deleted=eq.false&select=id,author_address,body,image_url,created_at,profiles(display_name,handle,avatar_url)&order=created_at.desc&limit=50');
+    // `posts` also connects to `profiles` through reactions, so PostgREST needs
+    // the direct author foreign-key relationship spelled out for this embed.
+    const posts = await supabase<PostRow[]>('posts?is_deleted=eq.false&select=id,author_address,body,image_url,created_at,profiles!posts_author_address_fkey(display_name,handle,avatar_url)&order=created_at.desc&limit=50');
     return NextResponse.json({ posts }, { headers: { 'Cache-Control': 'private, max-age=30' } });
   } catch { return NextResponse.json({ error: 'Could not load the feed.' }, { status: 503 }); }
 }
