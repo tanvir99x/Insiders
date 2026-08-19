@@ -39,15 +39,28 @@ export async function POST(request: NextRequest) {
     if (!valid) return NextResponse.json({ error: 'Wallet signature could not be verified.' }, { status: 401 });
     try {
       if (nonceId) await supabase(`auth_nonces?id=eq.${nonceId}`, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ used_at: new Date().toISOString() }) });
-      await supabase('profiles?on_conflict=wallet_address', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ wallet_address: address }) });
-      const response = NextResponse.json({ authenticated: true, address });
-      response.cookies.set(LOGIN_NONCE_COOKIE, '', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 0 });
-      setSession(response, address);
-      return response;
     } catch (error) {
-      console.error('Could not create wallet login session.', error instanceof Error ? error.message : error);
-      return NextResponse.json({ error: 'The secure login session could not be created.' }, { status: 503 });
+      console.error('Could not consume wallet login nonce.', error instanceof Error ? error.message : error);
+      return NextResponse.json({ error: 'This login request could not be completed. Please try again.' }, { status: 503 });
     }
+
+    const response = NextResponse.json({ authenticated: true, address });
+    try {
+      setSession(response, address);
+    } catch (error) {
+      console.error('Could not create signed login session.', error instanceof Error ? error.message : error);
+      return NextResponse.json({ error: 'The login server is missing its SESSION_SECRET configuration.' }, { status: 503 });
+    }
+    response.cookies.set(LOGIN_NONCE_COOKIE, '', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 0 });
+
+    // Authentication has succeeded. A profile is convenience data and must not prevent a
+    // valid Base Account from signing in if Supabase has a temporary permissions outage.
+    try {
+      await supabase('profiles?on_conflict=wallet_address', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ wallet_address: address }) });
+    } catch (error) {
+      console.error('Could not create wallet profile after login.', error instanceof Error ? error.message : error);
+    }
+    return response;
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'Unknown error';
     console.error('Could not verify wallet login.', detail);
